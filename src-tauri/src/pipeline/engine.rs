@@ -87,13 +87,13 @@ impl<'a> LocalPipelineEngine<'a> {
     ) -> Result<PipelineRun> {
         // Access progress tracker from global app state
         let progress_tracker = &crate::app_state::AppState::global().progress_tracker;
-        let cancel_token = if let Some(project_id) = &input.project_id {
+        let _cancel_token = if let Some(project_id) = &input.project_id {
             progress_tracker.register_active_build(project_id.to_string())
         } else {
             Arc::new(AtomicBool::new(false))
         };
         
-        let result = self.run_internal(input, cancel, planner, runtime);
+        let result = self.run_internal(input.clone(), cancel, planner, runtime);
         
         if let Some(project_id) = &input.project_id {
             progress_tracker.cleanup_active_build(project_id);
