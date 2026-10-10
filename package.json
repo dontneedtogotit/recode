@@ -1,0 +1,42 @@
+{
+  "name": "recode-swarm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run type-check && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "tauri:dev": "scripts/tauri-dev-with-vite.sh",
+    "tauri:build": "tauri build",
+    "type-check": "tsc --noEmit",
+    "swarm:start": "node scripts/swarmLauncher.mjs",
+    "swarm:coordinator": "node scripts/coordinator.mjs",
+    "swarm:plan": "node scripts/planner.mjs",
+    "swarm:status": "node scripts/status.mjs",
+    "swarm:release": "node scripts/releaseStale.mjs",
+    "swarm:work": "node scripts/workPicker.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^1.48.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "2.1.9",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/jest-dom": "^6.0.0",
+    "jsdom": "^25.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "2.1.9"
+  }
+}

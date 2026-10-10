@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=recode
+Comment=Native Omarchy Linux development environment
+Exec=recode
+Icon=recode
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=recode

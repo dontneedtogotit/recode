@@ -1,0 +1,18 @@
+.runner-view { max-width: 1440px; margin: 0 auto; }
+.runner-view .run-summary { background: var(--bg-base); box-shadow: none; }
+.runner-view .section-header:has(.runner-toolbar) { align-items: flex-start; flex-direction: column; gap: 12px; margin-top: 12px; }
+.runner-toolbar { width: 100%; padding: 12px 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); }
+.runner-toolbar > .text-secondary { flex-basis: 100%; overflow-wrap: anywhere; }
+.runner-toolbar > input { flex: 1 1 180px; min-width: 100px; width: auto; padding: 7px 10px; font-size: 12px; }
+.runner-toolbar > select { width: auto; max-width: 100%; }
+.runner-toolbar input[type="checkbox"] { width: auto; }
+.runner-log-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); }
+.runner-view .console-preview { min-height: 220px; max-height: 480px; }
+.runner-view .run-summary-copy { min-width: 0; overflow-wrap: anywhere; }
+.runner-view .step-item > span { min-width: 0; overflow-wrap: anywhere; }
+.runner-view .run-progress-value { min-width: 0; }
+@container (max-width: 600px) {
+  .runner-view .page-header, .runner-view .run-summary { align-items: flex-start; flex-direction: column; }
+  .runner-toolbar > input { flex-basis: 100%; }
+  .runner-view .run-progress-wrap { width: 100%; }
+}

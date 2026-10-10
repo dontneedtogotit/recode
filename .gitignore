@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+target/
+src-tauri/target/
+
+# Database (local runtime state)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+check_output.txt
+
+# Temporary files
+*.tmp
+.recode-write-*
+__pycache__/
+*.pyc
+AppDir/
+tsconfig.tsbuildinfo

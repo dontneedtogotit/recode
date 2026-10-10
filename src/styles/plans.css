@@ -1,0 +1,15 @@
+.plans-view { max-width: 1200px; margin: 0 auto; }
+.plans-view form .flex-between { gap: 16px; flex-wrap: wrap; }
+.plans-view textarea { resize: vertical; min-height: 110px; }
+.plan-library { display: flex; flex-direction: column; }
+.plan-library-row { display: flex; gap: 16px; align-items: flex-start; padding: 20px 0; border-top: 1px solid var(--border-subtle); }
+.plan-library-row > svg { flex-shrink: 0; color: var(--text-muted); margin-top: 3px; }
+.plan-library-copy { flex: 1; min-width: 0; }
+.plan-library-copy p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.plan-library-copy code { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.plan-library-actions { display: flex; align-items: flex-end; flex-direction: column; gap: 12px; }
+@container (max-width: 620px) {
+  .plan-library-row { flex-wrap: wrap; }
+  .plan-library-actions { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
+  .plans-view .page-header { flex-direction: column; align-items: flex-start; }
+}

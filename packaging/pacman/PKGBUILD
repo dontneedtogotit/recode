@@ -1,0 +1,46 @@
+pkgname=recode
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Native Omarchy Linux development environment'
+arch=(x86_64)
+url='https://github.com/codeforge/recode'
+license=(MIT)
+depends=(
+  webkit2gtk-4.1
+  openssl
+  libappindicator-gtk3
+  xdg-utils
+  curl
+  wget
+  base-devel
+)
+makedepends=(
+  rustup
+  nodejs
+  npm
+  webkit2gtk-4.1
+)
+optdepends=(
+  'code: CLI wrapper'
+)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  npm run build
+  cd projects/recode
+  cargo build --release --bin recode --manifest-path src-tauri/Cargo.toml
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+  install -Dm755 "projects/recode/src-tauri/target/release/recode" "$pkgdir/usr/bin/recode"
+  install -Dm644 "projects/recode/src-tauri/tauri.conf.json" "$pkgdir/etc/recode/tauri.conf.json"
+}
+
+check() {
+  cd "$srcdir/$pkgname-$pkgver/projects/recode"
+  npm test
+  cargo test --manifest-path src-tauri/Cargo.toml
+}

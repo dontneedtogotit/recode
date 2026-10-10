@@ -1,0 +1,43 @@
+pub mod cognitive;
+pub mod agent_team;
+pub mod agent_task_history;
+pub mod agent_runtime_settings;
+pub mod agent_routing;
+pub mod clarification;
+pub mod diagnostics;
+pub mod dynamic_tools;
+pub mod plan_graph;
+pub mod provider_selection;
+pub mod turn_summary;
+pub mod degradation_registry;
+pub mod planning_circuit_breaker;
+pub mod retry;
+pub mod agent_runtime;
+pub mod agents;
+pub mod app_state;
+pub mod commands;
+pub mod dev_server;
+pub mod domain;
+pub mod event_bus;
+pub mod gateway;
+pub mod git;
+pub mod ipc_benchmark;
+pub mod learning;
+pub mod migration;
+pub mod persistence;
+pub mod pipeline;
+pub mod pipeline_history;
+pub mod planner;
+pub mod provider;
+pub mod provider_settings;
+pub mod quality;
+pub mod runtime_monitor;
+pub mod self_heal;
+pub mod startup_benchmark;
+pub mod tauri_commands;
+pub mod updater;
+pub mod workspace;
+
+pub fn run() {
+    println!("recode");
+}

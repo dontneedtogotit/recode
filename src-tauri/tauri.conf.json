@@ -1,0 +1,25 @@
+{
+  "productName": "recode",
+  "version": "0.1.0",
+  "identifier": "dev.codeforge.recode",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:9666",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "recode",
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  }
+}
