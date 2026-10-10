@@ -878,6 +878,12 @@ fn decode_pipeline_result(run_id: &str, json: Option<String>) -> Result<Option<P
     Ok(run)
 }
 
+#[tauri::command(rename_all = "snake_case")]
+pub fn cancel_build(project_id: String) -> Result<(), String> {
+    crate::app_state::AppState::global().progress_tracker.cancel_build(&project_id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod pipeline_status_tests {
     use super::*;

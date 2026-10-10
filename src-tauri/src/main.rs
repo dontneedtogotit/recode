@@ -6,6 +6,7 @@ fn main() {
             recode::tauri_commands::write_project_file,
             recode::tauri_commands::read_project_file,
             recode::tauri_commands::list_project_files,
+            recode::tauri_commands::cancel_build,
             recode::tauri_commands::validate_workspace_path,
             recode::tauri_commands::create_and_execute_plan,
             recode::tauri_commands::run_pipeline,

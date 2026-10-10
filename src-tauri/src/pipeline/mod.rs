@@ -57,6 +57,7 @@ mod edge_case_exercise;
 mod accessibility_audit;
 mod ux_consistency;
 pub mod progress_tracker;
+pub mod executor;
 mod types;
 mod verify;
 mod outcome;
