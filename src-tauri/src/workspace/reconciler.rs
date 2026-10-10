@@ -56,7 +56,9 @@ impl Default for ReconciliationPipeline {
     fn default() -> Self {
         let mut pipeline = Self::new();
         pipeline.add_reconciler(DefaultJsxExtensionReconciler);
+        pipeline.add_reconciler(DefaultImportPathReconciler);
         pipeline.add_reconciler(DefaultIndexHtmlReconciler);
+        pipeline.add_reconciler(DefaultViteConfigDependencyReconciler);
         pipeline
     }
 }
@@ -291,6 +293,302 @@ fn is_ident_start(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_'
 }
 
+/// Update import paths after JSX extension renaming (.ts → .tsx).
+///
+/// When `DefaultJsxExtensionReconciler` renames `src/App.ts` to `src/App.tsx`,
+/// any file importing `./App` or `./App.ts` still works (bundler resolves
+/// extensions), but explicit `./App.ts` imports should be updated to
+/// `./App.tsx` to avoid confusion and ensure consistent resolution. More
+/// importantly, if a `.ts` file is renamed to `.tsx` and another file imports
+/// it with an explicit `.ts` extension, the import will fail to resolve in
+/// strict mode.
+///
+/// Ported from devcode's `ServerWorkspaceManager.reconcileImportExports`.
+/// This is a lightweight version: it only fixes explicit extension imports
+/// that point to renamed files, not full import/export reconciliation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultImportPathReconciler;
+
+impl WorkspaceReconciler for DefaultImportPathReconciler {
+    fn name(&self) -> &'static str {
+        "import-paths"
+    }
+
+    fn reconcile(&self, workspace_root: &Path) -> Result<ReconciliationResult> {
+        let start = std::time::Instant::now();
+        let files = match super::LocalWorkspaceService.list_project_files(workspace_root) {
+            Ok(files) => files,
+            Err(error) => {
+                return Ok(ReconciliationResult {
+                    reconciler: self.name().into(),
+                    modified: false,
+                    summary: "Skipped (listing failed)".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+
+        // Build a set of files that were renamed from .ts to .tsx.
+        // A .tsx file whose .ts counterpart no longer exists was likely renamed.
+        // Key by basename so import paths like `./App` can be matched.
+        let mut renamed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let tsx_paths: Vec<&str> = files.iter()
+            .filter(|f| f.path.ends_with(".tsx"))
+            .map(|f| f.path.as_str())
+            .collect();
+        for tsx_path in &tsx_paths {
+            let ts_path = tsx_path.strip_suffix(".tsx").unwrap_or(tsx_path).to_string() + ".ts";
+            if !files.iter().any(|f| f.path == ts_path) {
+                // Key by basename stem: "src/App.tsx" → "App"
+                let tsx_stem = tsx_path.rsplit('/').next().unwrap_or(tsx_path)
+                    .strip_suffix(".tsx").unwrap_or(tsx_path).to_string();
+                let ts_stem = ts_path.rsplit('/').next().unwrap_or(&ts_path)
+                    .strip_suffix(".ts").unwrap_or(&ts_path).to_string();
+                renamed.insert(ts_stem, tsx_stem);
+            }
+        }
+
+        if renamed.is_empty() {
+            return Ok(ReconciliationResult {
+                reconciler: self.name().into(),
+                modified: false,
+                summary: "No renamed imports to fix".into(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: None,
+            });
+        }
+
+        let mut updated = 0usize;
+        for file in &files {
+            // Only update TypeScript/JavaScript source files.
+            if !file.path.ends_with(".ts") && !file.path.ends_with(".tsx")
+                && !file.path.ends_with(".js") && !file.path.ends_with(".jsx")
+            {
+                continue;
+            }
+            let mut content = file.content.clone();
+            let original = content.clone();
+            for (old_stem, new_stem) in &renamed {
+                // Replace `from './old.ts'` → `from './new.tsx'`
+                let old_import = format!("from \"./{old_stem}.ts\"");
+                let new_import = format!("from \"./{new_stem}.tsx\"");
+                content = content.replace(&old_import, &new_import);
+                let old_import_s = format!("from './{old_stem}.ts'");
+                let new_import_s = format!("from './{new_stem}.tsx'");
+                content = content.replace(&old_import_s, &new_import_s);
+            }
+            if content != original {
+                let target = workspace_root.join(&file.path);
+                if std::fs::write(&target, &content).is_ok() {
+                    updated += 1;
+                }
+            }
+        }
+
+        Ok(ReconciliationResult {
+            reconciler: self.name().into(),
+            modified: updated > 0,
+            summary: if updated > 0 {
+                format!("Updated import paths in {updated} file(s) after JSX rename")
+            } else {
+                "No import paths needed updating".into()
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: None,
+        })
+    }
+}
+
+/// Ensure packages imported in `vite.config.ts` are listed in `package.json`
+/// devDependencies. The deterministic scaffolder already pins these, but if
+/// the user or a previous run modified `vite.config.ts`, missing packages
+/// would break the build.
+///
+/// Ported from devcode's `ViteConfigDependencyReconciler`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultViteConfigDependencyReconciler;
+
+/// Safe version pins for common Vite plugins.
+fn safe_version(pkg: &str) -> &'static str {
+    match pkg {
+        "vite" => "^7.3.6",
+        "@vitejs/plugin-react" => "^5.2.0",
+        "@vitejs/plugin-vue" => "^5.0.0",
+        "vite-tsconfig-paths" => "^4.3.0",
+        "vite-plugin-svelte" => "^3.0.0",
+        "autoprefixer" => "^10.4.0",
+        "postcss" => "^8.4.0",
+        "tailwindcss" => "^3.4.0",
+        _ => "latest",
+    }
+}
+
+impl WorkspaceReconciler for DefaultViteConfigDependencyReconciler {
+    fn name(&self) -> &'static str {
+        "vite-config-dependencies"
+    }
+
+    fn reconcile(&self, workspace_root: &Path) -> Result<ReconciliationResult> {
+        let start = std::time::Instant::now();
+        let vite_config_path = workspace_root.join("vite.config.ts");
+        let vite_config = match std::fs::read_to_string(&vite_config_path) {
+            Ok(content) => content,
+            Err(_) => {
+                return Ok(ReconciliationResult {
+                    reconciler: self.name().into(),
+                    modified: false,
+                    summary: "No vite.config.ts found".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                });
+            }
+        };
+
+        // Parse import statements from vite.config.ts to find package imports.
+        let mut imports: Vec<String> = Vec::new();
+        for line in vite_config.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("import ") && !trimmed.starts_with("import\t") {
+                continue;
+            }
+            // Extract the module path from `import ... from 'module'` or `import 'module'`.
+            if let Some(pos) = trimmed.find("from ") {
+                let after_from = &trimmed[pos + 5..].trim();
+                if after_from.starts_with('\'') || after_from.starts_with('"') {
+                    let quote = after_from.chars().next().unwrap();
+                    if let Some(end) = after_from[1..].find(quote) {
+                        let pkg = &after_from[1..1 + end];
+                        if !pkg.starts_with('.') && !pkg.starts_with('/') {
+                            // Extract package name (handle scoped packages).
+                            let pkg_name = if pkg.starts_with('@') {
+                                pkg.split('/').take(2).collect::<Vec<_>>().join("/")
+                            } else {
+                                pkg.split('/').next().unwrap_or(pkg).to_string()
+                            };
+                            imports.push(pkg_name);
+                        }
+                    }
+                }
+            } else {
+                // Bare import: `import 'module'`
+                let after_import = trimmed["import".len()..].trim();
+                if after_import.starts_with('\'') || after_import.starts_with('"') {
+                    let quote = after_import.chars().next().unwrap();
+                    if let Some(end) = after_import[1..].find(quote) {
+                        let pkg = &after_import[1..1 + end];
+                        if !pkg.starts_with('.') && !pkg.starts_with('/') {
+                            let pkg_name = if pkg.starts_with('@') {
+                                pkg.split('/').take(2).collect::<Vec<_>>().join("/")
+                            } else {
+                                pkg.split('/').next().unwrap_or(pkg).to_string()
+                            };
+                            imports.push(pkg_name);
+                        }
+                    }
+                }
+            }
+        }
+
+        if imports.is_empty() {
+            return Ok(ReconciliationResult {
+                reconciler: self.name().into(),
+                modified: false,
+                summary: "No imports in vite.config.ts".into(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: None,
+            });
+        }
+
+        // Read package.json and check which imports are missing.
+        let pkg_path = workspace_root.join("package.json");
+        let pkg_content = match std::fs::read_to_string(&pkg_path) {
+            Ok(content) => content,
+            Err(error) => {
+                return Ok(ReconciliationResult {
+                    reconciler: self.name().into(),
+                    modified: false,
+                    summary: "Cannot read package.json".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+
+        let mut pkg_json: serde_json::Value = match serde_json::from_str(&pkg_content) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(ReconciliationResult {
+                    reconciler: self.name().into(),
+                    modified: false,
+                    summary: "Cannot parse package.json".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+
+        let deps = pkg_json.get("dependencies")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let dev_deps = pkg_json.get("devDependencies")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        let missing: Vec<String> = imports.iter()
+            .filter(|pkg| !deps.contains_key(&pkg.to_string()) && !dev_deps.contains_key(&pkg.to_string()))
+            .cloned()
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(ReconciliationResult {
+                reconciler: self.name().into(),
+                modified: false,
+                summary: "All vite config dependencies present".into(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: None,
+            });
+        }
+
+        // Add missing dependencies to devDependencies.
+        if let Some(dev_deps_obj) = pkg_json.get_mut("devDependencies").and_then(|v| v.as_object_mut()) {
+            for pkg in &missing {
+                let version = safe_version(pkg);
+                dev_deps_obj.insert(pkg.clone(), serde_json::Value::String(version.to_string()));
+            }
+        } else {
+            // Create devDependencies if it doesn't exist.
+            let mut new_dev_deps = serde_json::Map::new();
+            for pkg in &missing {
+                let version = safe_version(pkg);
+                new_dev_deps.insert(pkg.clone(), serde_json::Value::String(version.to_string()));
+            }
+            pkg_json["devDependencies"] = serde_json::Value::Object(new_dev_deps);
+        }
+
+        let updated = serde_json::to_string_pretty(&pkg_json).unwrap_or_default() + "\n";
+        if let Err(error) = std::fs::write(&pkg_path, &updated) {
+            return Ok(ReconciliationResult {
+                reconciler: self.name().into(),
+                modified: false,
+                summary: "Failed to write updated package.json".into(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: Some(error.to_string()),
+            });
+        }
+
+        Ok(ReconciliationResult {
+            reconciler: self.name().into(),
+            modified: true,
+            summary: format!("Added {} missing vite config dependencies: {}", missing.len(), missing.join(", ")),
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +639,99 @@ mod tests {
     fn detects_jsx_after_string_with_angle_bracket() {
         // `<` inside a string should not mask real JSX on the same line.
         assert!(contains_jsx("const s = 'a < b'; const el = <div>real</div>"));
+    }
+
+    #[test]
+    fn vite_config_dependency_reconciler_adds_missing_deps() {
+        let root = tempfile::tempdir().unwrap();
+        // vite.config.ts imports @vitejs/plugin-react but package.json doesn't have it.
+        std::fs::write(root.path().join("vite.config.ts"),
+            "import { defineConfig } from 'vitest/config'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({ plugins: [react()] })\n"
+        ).unwrap();
+        std::fs::write(root.path().join("package.json"),
+            "{\"name\":\"test\",\"devDependencies\":{\"vitest\":\"^3.0.0\"}}"
+        ).unwrap();
+
+        let result = DefaultViteConfigDependencyReconciler.reconcile(root.path()).unwrap();
+        assert!(result.modified);
+        assert!(result.summary.contains("@vitejs/plugin-react"));
+
+        let pkg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join("package.json")).unwrap()
+        ).unwrap();
+        assert!(pkg["devDependencies"]["@vitejs/plugin-react"].as_str().unwrap().contains("^5.2.0"));
+        // Existing dep is preserved.
+        assert!(pkg["devDependencies"]["vitest"].as_str().is_some());
+    }
+
+    #[test]
+    fn vite_config_dependency_reconciler_skips_when_all_present() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("vite.config.ts"),
+            "import react from '@vitejs/plugin-react'\nexport default {};\n"
+        ).unwrap();
+        std::fs::write(root.path().join("package.json"),
+            "{\"devDependencies\":{\"@vitejs/plugin-react\":\"^5.0.0\"}}"
+        ).unwrap();
+
+        let result = DefaultViteConfigDependencyReconciler.reconcile(root.path()).unwrap();
+        assert!(!result.modified);
+        assert!(result.summary.contains("present"));
+    }
+
+    #[test]
+    fn vite_config_dependency_reconciler_skips_when_no_vite_config() {
+        let root = tempfile::tempdir().unwrap();
+        let result = DefaultViteConfigDependencyReconciler.reconcile(root.path()).unwrap();
+        assert!(!result.modified);
+        assert!(result.summary.contains("No vite.config.ts"));
+    }
+
+    #[test]
+    fn import_path_reconciler_updates_renamed_imports() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        // App.ts was renamed to App.tsx (only .tsx exists).
+        std::fs::write(root.path().join("src/App.tsx"), "export function App() { return null; }\n").unwrap();
+        // main.tsx imports App with explicit .ts extension (stale after rename).
+        std::fs::write(root.path().join("src/main.tsx"),
+            "import { App } from \"./App.ts\";\nrender(<App />);\n"
+        ).unwrap();
+
+        let result = DefaultImportPathReconciler.reconcile(root.path()).unwrap();
+        assert!(result.modified);
+        assert!(result.summary.contains("1 file"));
+
+        let main = std::fs::read_to_string(root.path().join("src/main.tsx")).unwrap();
+        assert!(main.contains("./App.tsx"), "import should be updated to .tsx: {main}");
+        assert!(!main.contains("./App.ts\""));
+    }
+
+    #[test]
+    fn import_path_reconciler_skips_when_nothing_renamed() {
+        let root = tempfile::tempdir().unwrap();
+        // Both .ts and .tsx exist — no rename happened.
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/App.ts"), "export function App() {}\n").unwrap();
+        std::fs::write(root.path().join("src/App.tsx"), "export function App() {}\n").unwrap();
+        std::fs::write(root.path().join("src/main.ts"), "import { App } from \"./App.ts\";\n").unwrap();
+
+        let result = DefaultImportPathReconciler.reconcile(root.path()).unwrap();
+        assert!(!result.modified);
+        assert!(result.summary.contains("No renamed"));
+    }
+
+    #[test]
+    fn default_pipeline_includes_all_reconcilers() {
+        let pipeline = ReconciliationPipeline::default();
+        // Run on an empty dir — all reconcilers should complete without error.
+        let root = tempfile::tempdir().unwrap();
+        let results = pipeline.run(root.path());
+        assert!(results.len() >= 4, "should have at least 4 reconcilers: {:?}", results.iter().map(|r| &r.reconciler).collect::<Vec<_>>());
+        let names: Vec<&str> = results.iter().map(|r| r.reconciler.as_str()).collect();
+        assert!(names.contains(&"jsx-extensions"));
+        assert!(names.contains(&"import-paths"));
+        assert!(names.contains(&"index-html"));
+        assert!(names.contains(&"vite-config-dependencies"));
     }
 }

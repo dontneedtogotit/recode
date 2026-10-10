@@ -146,6 +146,12 @@ pub struct BuildOutcome {
     pub static_analysis: Option<crate::pipeline::static_analysis::StaticAnalysisResult>,
     #[serde(default)]
     pub mental_simulation: Option<crate::pipeline::mental_simulator::SimulationResult>,
+    #[serde(default)]
+    pub production_readiness: Option<crate::pipeline::production_readiness::ProductionReadinessResult>,
+    #[serde(default)]
+    pub accessibility: Option<crate::pipeline::accessibility_audit::AccessibilityAuditResult>,
+    #[serde(default)]
+    pub ux_consistency: Option<crate::pipeline::ux_consistency::UXConsistencyResult>,
 }
 
 pub struct LocalFileGenerationService {

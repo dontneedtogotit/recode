@@ -1,4 +1,4 @@
-import type { PipelineRun, PlanStepState, StaticAnalysisResult, MentalSimulationResult } from '../types/frontend';
+import type { PipelineRun, PlanStepState, StaticAnalysisResult, MentalSimulationResult, ProductionReadinessResult, AccessibilityAuditResult, UXConsistencyResult } from '../types/frontend';
 import { normalizeVerificationResults } from './verification';
 export type { ConsoleEntry, PipelineRun } from '../types/frontend';
 export { loadAgentHistory, saveAgentHistory, pushAgentTaskRecord, createAgentHistoryState, type AgentTaskRecord } from './agentHistory';
@@ -59,6 +59,123 @@ function normalizeMentalSimulation(raw: unknown): MentalSimulationResult | undef
       total_assertions_checked: typeof metrics.total_assertions_checked === 'number' ? metrics.total_assertions_checked : 0,
       cycles_detected: typeof metrics.cycles_detected === 'number' ? metrics.cycles_detected : 0,
     },
+  };
+}
+
+function normalizeProductionReadiness(raw: unknown): ProductionReadinessResult | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.passed !== 'boolean') return undefined;
+  const findings = Array.isArray(item.findings)
+    ? item.findings.flatMap((f) => {
+        if (!f || typeof f !== 'object') return [];
+        const r = f as Record<string, unknown>;
+        if (typeof r.rule_id !== 'string' || typeof r.severity !== 'string' || typeof r.message !== 'string') return [];
+        return [{
+          rule_id: r.rule_id,
+          severity: r.severity as string,
+          message: r.message,
+          file: typeof r.file === 'string' ? r.file : '',
+          ...(typeof r.line === 'number' ? { line: r.line } : {}),
+          ...(typeof r.suggestion === 'string' ? { suggestion: r.suggestion } : {}),
+        }];
+      })
+    : [];
+  return {
+    passed: item.passed,
+    findings,
+    files_checked: typeof item.files_checked === 'number' ? item.files_checked : 0,
+    error_count: typeof item.error_count === 'number' ? item.error_count : 0,
+    warning_count: typeof item.warning_count === 'number' ? item.warning_count : 0,
+    info_count: typeof item.info_count === 'number' ? item.info_count : 0,
+  };
+}
+
+function normalizeAccessibility(raw: unknown): AccessibilityAuditResult | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.passed !== 'boolean') return undefined;
+  const findings = Array.isArray(item.findings)
+    ? item.findings.flatMap((f) => {
+        if (!f || typeof f !== 'object') return [];
+        const r = f as Record<string, unknown>;
+        if (typeof r.rule_id !== 'string' || !['error', 'warning', 'info'].includes(r.severity as string) || typeof r.message !== 'string') return [];
+        return [{
+          rule_id: r.rule_id,
+          severity: r.severity as 'error' | 'warning' | 'info',
+          message: r.message,
+          file: typeof r.file === 'string' ? r.file : '',
+          ...(typeof r.line === 'number' ? { line: r.line } : {}),
+          ...(typeof r.column === 'number' ? { column: r.column } : {}),
+          ...(typeof r.suggestion === 'string' ? { suggestion: r.suggestion } : {}),
+        }];
+      })
+    : [];
+  return {
+    passed: item.passed,
+    findings,
+    files_checked: typeof item.files_checked === 'number' ? item.files_checked : 0,
+    error_count: typeof item.error_count === 'number' ? item.error_count : 0,
+    warning_count: typeof item.warning_count === 'number' ? item.warning_count : 0,
+    info_count: typeof item.info_count === 'number' ? item.info_count : 0,
+  };
+}
+
+function normalizeUXConsistency(raw: unknown): UXConsistencyResult | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.passed !== 'boolean') return undefined;
+  const findings = Array.isArray(item.findings)
+    ? item.findings.flatMap((f) => {
+        if (!f || typeof f !== 'object') return [];
+        const r = f as Record<string, unknown>;
+        if (typeof r.rule_id !== 'string' || !['error', 'warning', 'info'].includes(r.severity as string) || typeof r.message !== 'string') return [];
+        return [{
+          rule_id: r.rule_id,
+          severity: r.severity as 'error' | 'warning' | 'info',
+          message: r.message,
+          file: typeof r.file === 'string' ? r.file : '',
+          ...(typeof r.line === 'number' ? { line: r.line } : {}),
+          ...(typeof r.suggestion === 'string' ? { suggestion: r.suggestion } : {}),
+        }];
+      })
+    : [];
+  return {
+    passed: item.passed,
+    findings,
+    files_checked: typeof item.files_checked === 'number' ? item.files_checked : 0,
+    error_count: typeof item.error_count === 'number' ? item.error_count : 0,
+    warning_count: typeof item.warning_count === 'number' ? item.warning_count : 0,
+    info_count: typeof item.info_count === 'number' ? item.info_count : 0,
+  };
+}
+
+function normalizeProductionReadiness(raw: unknown): ProductionReadinessResult | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.passed !== 'boolean') return undefined;
+  const findings = Array.isArray(item.findings)
+    ? item.findings.flatMap((f) => {
+        if (!f || typeof f !== 'object') return [];
+        const r = f as Record<string, unknown>;
+        if (typeof r.rule_id !== 'string' || typeof r.severity !== 'string' || typeof r.message !== 'string') return [];
+        return [{
+          rule_id: r.rule_id,
+          severity: r.severity,
+          message: r.message,
+          file: typeof r.file === 'string' ? r.file : '',
+          ...(typeof r.line === 'number' ? { line: r.line } : {}),
+          ...(typeof r.suggestion === 'string' ? { suggestion: r.suggestion } : {}),
+        }];
+      })
+    : [];
+  return {
+    passed: item.passed,
+    findings,
+    files_checked: typeof item.files_checked === 'number' ? item.files_checked : 0,
+    error_count: typeof item.error_count === 'number' ? item.error_count : 0,
+    warning_count: typeof item.warning_count === 'number' ? item.warning_count : 0,
+    info_count: typeof item.info_count === 'number' ? item.info_count : 0,
   };
 }
 
@@ -359,6 +476,9 @@ export function normalizePipelineRun(value: unknown): PipelineRun {
     verification_summary: typeof outcome.verification_summary === 'string' ? outcome.verification_summary : typeof record.verification_summary === 'string' ? record.verification_summary : '',
     static_analysis: normalizeStaticAnalysis(outcome.static_analysis),
     ...(normalizeMentalSimulation(outcome.mental_simulation) ? { mental_simulation: normalizeMentalSimulation(outcome.mental_simulation) } : {}),
+    ...(normalizeProductionReadiness(outcome.production_readiness) ? { production_readiness: normalizeProductionReadiness(outcome.production_readiness) } : {}),
+    ...(normalizeAccessibility(outcome.accessibility) ? { accessibility: normalizeAccessibility(outcome.accessibility) } : {}),
+    ...(normalizeUXConsistency(outcome.ux_consistency) ? { ux_consistency: normalizeUXConsistency(outcome.ux_consistency) } : {}),
   } : undefined;
   return {
     ...(typeof record.run_id === 'string' ? { runId: record.run_id } : {}),

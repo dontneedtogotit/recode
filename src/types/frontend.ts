@@ -97,6 +97,46 @@ export type RunOutcome = {
   verification_results?: VerificationGateResult[];
   static_analysis?: StaticAnalysisResult;
   mental_simulation?: MentalSimulationResult;
+  production_readiness?: ProductionReadinessResult;
+  accessibility?: AccessibilityAuditResult;
+  ux_consistency?: UXConsistencyResult;
+};
+
+export type AccessibilityAuditResult = {
+  passed: boolean;
+  findings: AccessibilityFinding[];
+  files_checked: number;
+  error_count: number;
+  warning_count: number;
+  info_count: number;
+};
+
+export type AccessibilityFinding = {
+  rule_id: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  file: string;
+  line?: number;
+  column?: number;
+  suggestion?: string;
+};
+
+export type UXConsistencyResult = {
+  passed: boolean;
+  findings: UXFinding[];
+  files_checked: number;
+  error_count: number;
+  warning_count: number;
+  info_count: number;
+};
+
+export type UXFinding = {
+  rule_id: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  file: string;
+  line?: number;
+  suggestion?: string;
 };
 
 /** Shared data contracts are independent of the native transport adapter. */

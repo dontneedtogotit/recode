@@ -73,13 +73,35 @@ impl LocalPromptBuilderService {
                  Return ONLY the raw, complete file content. \
                  Include all necessary imports and exports that are compatible with the manifest above. \
                  Do not wrap the response in markdown code fences, do not add explanations, \
-                 and do not output other files.",
+                 and do not output other files.\n\n\
+                 Requirements:\n\
+                 - Use strict TypeScript (no any, no ts-ignore)\n\
+                 - Handle errors with structured error types\n\
+                 - Do NOT use mock shortcuts, TODO comments, placeholder strings, or throw new Error(\"Not implemented\")\n\
+                 - Generate COMPLETE file content — never truncate or omit sections",
                 goal = goal,
                 manifest_section = manifest_section,
                 path = file.path,
                 language = file.language,
                 purpose = file.purpose,
             );
+            // Inject file-type-specific requirements (ported from devcode
+            // GenerationPromptBuilder → getFileTypeRequirements). This prevents
+            // common defect classes by giving the model path/language-specific
+            // generation guidance (e.g., "use async/await for API routes",
+            // "include error boundaries in components").
+            let type_reqs = crate::pipeline::file_classification::get_file_type_requirements(
+                &file.path,
+                &file.language,
+            );
+            let user_prompt = if type_reqs.is_empty() {
+                user_prompt
+            } else {
+                format!(
+                    "{user_prompt}\n\nFile-type requirements:\n{}",
+                    type_reqs.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n")
+                )
+            };
             let mut prompt = FileGenerationPrompt::new(
                 file.path.clone(),
                 file.language.clone(),
@@ -175,5 +197,63 @@ mod tests {
         };
         let result = service.build_file_prompts(&manifest, "build a landing page");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_prompt_includes_type_requirements_for_tsx() {
+        let service = LocalPromptBuilderService::new();
+        let manifest = GenerationManifest {
+            run_id: "run-tsx".into(),
+            files: vec![ManifestFile {
+                path: "src/App.tsx".into(),
+                language: "typescript".into(),
+                purpose: "root component".into(),
+                wave: 1,
+                max_bytes: 8192,
+                status: ManifestFileStatus::Pending,
+                expected_loc: 100,
+                depends_on: Vec::new(),
+            }],
+            prompts: Vec::new(),
+            budget: super::super::manifest_budget::ManifestBudget::default(),
+        };
+        let prompts = service.build_file_prompts(&manifest, "build app").unwrap();
+        // The prompt should include the general requirements section.
+        assert!(prompts[0].user_prompt.contains("Requirements:"));
+        assert!(prompts[0].user_prompt.contains("strict TypeScript"));
+        // The prompt should also include file-type-specific requirements.
+        assert!(
+            prompts[0].user_prompt.contains("File-type requirements:"),
+            "expected file-type requirements section, got: {}",
+            prompts[0].user_prompt
+        );
+    }
+
+    #[test]
+    fn file_prompt_omits_type_requirements_when_empty() {
+        let service = LocalPromptBuilderService::new();
+        // get_file_type_requirements always returns at least a default
+        // ("Keep functions focused and small"), so the File-type requirements
+        // section always appears. This test verifies the section IS present
+        // even for files without specific path matches (CSS).
+        let manifest = GenerationManifest {
+            run_id: "run-css".into(),
+            files: vec![ManifestFile {
+                path: "src/App.css".into(),
+                language: "css".into(),
+                purpose: "styles".into(),
+                wave: 1,
+                max_bytes: 4096,
+                status: ManifestFileStatus::Pending,
+                expected_loc: 100,
+                depends_on: Vec::new(),
+            }],
+            prompts: Vec::new(),
+            budget: super::super::manifest_budget::ManifestBudget::default(),
+        };
+        let prompts = service.build_file_prompts(&manifest, "build app").unwrap();
+        // CSS gets the default requirement, so the section appears.
+        assert!(prompts[0].user_prompt.contains("File-type requirements:"));
+        assert!(prompts[0].user_prompt.contains("Keep functions focused"));
     }
 }
