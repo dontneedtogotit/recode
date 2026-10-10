@@ -26,11 +26,13 @@ use crate::pipeline::identity_persistence::{
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use crate::pipeline::progress_tracker::ProgressTracker;
 
 #[derive(Debug)]
 pub struct AppState {
     pub connection: Mutex<rusqlite::Connection>,
     pub monitor: &'static DefaultRuntimeMonitorService,
+    pub progress_tracker: ProgressTracker,
 }
 
 impl AppState {
@@ -39,6 +41,7 @@ impl AppState {
         let state = Self {
             connection,
             monitor: crate::runtime_monitor::service(),
+            progress_tracker: ProgressTracker::new(),
         };
         {
             let conn = state.db();

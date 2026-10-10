@@ -56,6 +56,7 @@ mod acceptance_test_derivation;
 mod edge_case_exercise;
 mod accessibility_audit;
 mod ux_consistency;
+pub mod progress_tracker;
 mod types;
 mod verify;
 mod outcome;

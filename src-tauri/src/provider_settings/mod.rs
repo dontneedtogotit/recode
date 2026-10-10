@@ -8,6 +8,7 @@ pub mod tests;
 pub struct ProviderSettings {
     pub id: String,
     pub provider: String,
+    pub model: Option<String>, // Added
     pub api_key: String,
     pub enabled: bool,
 }
@@ -34,14 +35,14 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
             return Err(DomainError::invalid_input("API keys cannot be stored in SQLite; use RECODE_OPENAI_API_KEY in the app process environment"));
         }
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS provider_settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, api_key TEXT NOT NULL, enabled INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS provider_settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT, api_key TEXT NOT NULL, enabled INTEGER NOT NULL)",
             [],
         )
         .map_err(|e| DomainError::internal(format!("schema failed: {e}")))?;
 
         conn.execute(
-            "INSERT OR REPLACE INTO provider_settings (id, provider, api_key, enabled) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![&settings.id, &settings.provider, &settings.api_key, settings.enabled as i32],
+            "INSERT OR REPLACE INTO provider_settings (id, provider, model, api_key, enabled) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![&settings.id, &settings.provider, &settings.model, &settings.api_key, settings.enabled as i32],
         )
         .map_err(|e| DomainError::internal(format!("save provider settings failed: {e}")))?;
 
@@ -52,7 +53,7 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
         conn: &rusqlite::Connection,
     ) -> Result<Vec<ProviderSettings>, DomainError> {
         let mut stmt = conn
-            .prepare("SELECT id, provider, enabled FROM provider_settings")
+            .prepare("SELECT id, provider, model, enabled FROM provider_settings")
             .map_err(|e| DomainError::internal(format!("prepare failed: {e}")))?;
 
         let rows = stmt
@@ -60,8 +61,9 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
                 Ok(ProviderSettings {
                     id: row.get(0)?,
                     provider: row.get(1)?,
+                    model: row.get(2)?,
                     api_key: String::new(),
-                    enabled: row.get::<_, i32>(2)? != 0,
+                    enabled: row.get::<_, i32>(3)? != 0,
                 })
             })
             .map_err(|e| DomainError::internal(format!("query failed: {e}")))?;
