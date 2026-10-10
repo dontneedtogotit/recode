@@ -102,6 +102,24 @@ export type RunOutcome = {
   ux_consistency?: UXConsistencyResult;
 };
 
+export type ProductionReadinessResult = {
+  passed: boolean;
+  findings: ProductionFinding[];
+  files_checked: number;
+  error_count: number;
+  warning_count: number;
+  info_count: number;
+};
+
+export type ProductionFinding = {
+  rule_id: string;
+  severity: string;
+  message: string;
+  file: string;
+  line?: number;
+  suggestion?: string;
+};
+
 export type AccessibilityAuditResult = {
   passed: boolean;
   findings: AccessibilityFinding[];

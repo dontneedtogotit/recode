@@ -150,39 +150,11 @@ function normalizeUXConsistency(raw: unknown): UXConsistencyResult | undefined {
   };
 }
 
-function normalizeProductionReadiness(raw: unknown): ProductionReadinessResult | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const item = raw as Record<string, unknown>;
-  if (typeof item.passed !== 'boolean') return undefined;
-  const findings = Array.isArray(item.findings)
-    ? item.findings.flatMap((f) => {
-        if (!f || typeof f !== 'object') return [];
-        const r = f as Record<string, unknown>;
-        if (typeof r.rule_id !== 'string' || typeof r.severity !== 'string' || typeof r.message !== 'string') return [];
-        return [{
-          rule_id: r.rule_id,
-          severity: r.severity,
-          message: r.message,
-          file: typeof r.file === 'string' ? r.file : '',
-          ...(typeof r.line === 'number' ? { line: r.line } : {}),
-          ...(typeof r.suggestion === 'string' ? { suggestion: r.suggestion } : {}),
-        }];
-      })
-    : [];
-  return {
-    passed: item.passed,
-    findings,
-    files_checked: typeof item.files_checked === 'number' ? item.files_checked : 0,
-    error_count: typeof item.error_count === 'number' ? item.error_count : 0,
-    warning_count: typeof item.warning_count === 'number' ? item.warning_count : 0,
-    info_count: typeof item.info_count === 'number' ? item.info_count : 0,
-  };
-}
-
 type TauriInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 type TauriEvent = {
   listen?: (name: string, callback: (event: { payload: unknown }) => void) => Promise<() => void>;
 };
+
 type TauriGlobal = { invoke?: TauriInvoke; event?: TauriEvent };
 
 export type AgentTaskInput = { agentId: string } & (
@@ -730,10 +702,10 @@ export function subscribeToPipelineEvents(handler: (event: PipelineEvent) => voi
   if (!listen) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  void listen('pipeline-event', (event) => {
+  void listen('pipeline-event', (event: any) => {
     const normalized = normalizePipelineEvent(event.payload);
     if (!disposed && normalized) handler(normalized);
-  }).then((cleanup) => {
+  }).then((cleanup: any) => {
     if (disposed) cleanup(); else unlisten = cleanup;
   });
   return () => { disposed = true; unlisten?.(); };
