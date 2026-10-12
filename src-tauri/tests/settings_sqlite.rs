@@ -9,6 +9,7 @@ fn settings_command_persists_provider_settings_to_sqlite() {
     let input = ProviderSettings {
         id: "settings-1".into(),
         provider: "openai".into(),
+        model: None,
         api_key: String::new(),
         enabled: true,
     };

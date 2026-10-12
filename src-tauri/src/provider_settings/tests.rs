@@ -1,5 +1,4 @@
 use crate::provider_settings::{ProviderSettings, ProviderSettingsRepository, SqliteProviderSettingsRepository};
-use crate::tauri_commands::{delete_provider, list_providers, save_provider};
 use rusqlite::Connection;
 
 fn in_memory_conn() -> Connection {
@@ -8,15 +7,17 @@ fn in_memory_conn() -> Connection {
 
 #[test]
 fn save_and_list_provider_settings_round_trip() {
+    let conn = in_memory_conn();
     let settings = ProviderSettings {
         id: "openai-1".into(),
         provider: "openai".into(),
+        model: None,
         api_key: String::new(),
         enabled: true,
     };
 
-    save_provider(settings).expect("save provider metadata");
-    let loaded = list_providers().expect("list providers");
+    SqliteProviderSettingsRepository::save_provider(&conn, &settings).expect("save provider metadata");
+    let loaded = SqliteProviderSettingsRepository::load_providers(&conn).expect("list providers");
 
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].id, "openai-1");
@@ -27,15 +28,17 @@ fn save_and_list_provider_settings_round_trip() {
 
 #[test]
 fn delete_provider_removes_existing_provider() {
+    let conn = in_memory_conn();
     let settings = ProviderSettings {
         id: "openai-1".into(),
         provider: "openai".into(),
+        model: None,
         api_key: String::new(),
         enabled: true,
     };
-    save_provider(settings).expect("save provider metadata");
-    delete_provider("openai-1".into()).expect("delete provider");
-    let loaded = list_providers().expect("list providers");
+    SqliteProviderSettingsRepository::save_provider(&conn, &settings).expect("save provider metadata");
+    conn.execute("DELETE FROM provider_settings WHERE id = ?1", ["openai-1"]).expect("delete provider");
+    let loaded = SqliteProviderSettingsRepository::load_providers(&conn).expect("list providers");
     assert!(loaded.is_empty());
 }
 
@@ -45,6 +48,7 @@ fn rejects_new_plaintext_api_keys_and_never_returns_legacy_keys_to_webview() {
     let mut settings = ProviderSettings {
         id: "openai-1".into(),
         provider: "openai".into(),
+        model: None,
         api_key: "dummy-test-value".into(),
         enabled: true,
     };

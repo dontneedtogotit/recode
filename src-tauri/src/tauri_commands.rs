@@ -805,6 +805,282 @@ pub fn delete_provider(id: String) -> Result<(), String> {
         .map(|_| ())
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic provider / model management: catalog, discovery, routing,
+// credentials, and the dynamic orchestrator. All synchronous (crate has no
+// tokio). Credential values never cross IPC: they are resolved server-side
+// (stored credential or env) and only redacted hints are returned.
+// ---------------------------------------------------------------------------
+
+fn credentials_db_path() -> String {
+    // Same file the global app state opens (mirrors save_provider semantics).
+    "recode.db".to_string()
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertModelInput {
+    pub provider: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub input_modalities: Option<Vec<crate::model_catalog::Modality>>,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
+    pub supports_structured_output: bool,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub cost_tier: Option<crate::model_catalog::CostTier>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub strengths: Option<Vec<String>>,
+    #[serde(default)]
+    pub task_affinity: Option<std::collections::HashMap<String, f32>>,
+    #[serde(default)]
+    pub prompt_price_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub completion_price_per_mtok: Option<f64>,
+}
+
+#[tauri::command]
+pub fn list_models(provider: Option<String>) -> Result<Vec<crate::model_catalog::ModelInfo>, String> {
+    let catalog = AppState::global().model_catalog();
+    Ok(match provider {
+        Some(p) if !p.is_empty() => catalog.for_provider(&p),
+        _ => catalog.all(),
+    })
+}
+
+#[tauri::command]
+pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::ModelInfo, String> {
+    use crate::model_catalog::*;
+    let model_id = input.model_id.trim();
+    if model_id.is_empty() {
+        return Err("model_id must not be empty".into());
+    }
+    let provider = input.provider.trim();
+    if provider.is_empty() {
+        return Err("provider must not be empty".into());
+    }
+    let id = format!("{}/{}", provider, model_id);
+    let name = input.name.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| model_id.to_string());
+    let model = ModelInfo {
+        id: id.clone(),
+        provider: provider.to_string(),
+        model_id: model_id.to_string(),
+        name,
+        family: input
+            .family
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| provider.to_string()),
+        context_window: input.context_window.unwrap_or(128_000),
+        max_output_tokens: input.max_output_tokens.unwrap_or(8_192),
+        input_modalities: input.input_modalities.unwrap_or_else(|| vec![Modality::Text]),
+        supports_tools: input.supports_tools,
+        supports_structured_output: input.supports_structured_output,
+        supports_reasoning: input.supports_reasoning,
+        cost_tier: input.cost_tier.unwrap_or(CostTier::Medium),
+        description: input.description.unwrap_or_default(),
+        strengths: input.strengths.unwrap_or_default(),
+        task_affinity: input.task_affinity.unwrap_or_default(),
+        prompt_price_per_mtok: input.prompt_price_per_mtok,
+        completion_price_per_mtok: input.completion_price_per_mtok,
+        discovered: false,
+    };
+    AppState::global().model_catalog().upsert(model.clone());
+    Ok(model)
+}
+
+#[tauri::command]
+pub fn remove_model(id: String) -> Result<bool, String> {
+    let removed = AppState::global().model_catalog().get(&id).is_some();
+    AppState::global().model_catalog().remove(&id);
+    Ok(removed)
+}
+
+#[tauri::command]
+pub fn discover_provider_models(provider: String) -> Result<crate::model_discovery::DiscoveryResult, String> {
+    let catalog = AppState::global().model_catalog();
+    let db = credentials_db_path();
+    Ok(crate::model_discovery::discover_provider(
+        &provider,
+        catalog,
+        None,
+        None,
+        &db,
+    ))
+}
+
+#[tauri::command]
+pub fn import_env_api_key(provider: String) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
+    let db = credentials_db_path();
+    let ep = crate::model_discovery::endpoint_for(&provider)
+        .ok_or_else(|| format!("no known endpoint for provider '{provider}'"))?;
+    let key = std::env::var(ep.env_var).map_err(|_| format!("{} is not set in the app process environment", ep.env_var))?;
+    if key.trim().is_empty() {
+        return Err(format!("{} is set but empty", ep.env_var));
+    }
+    crate::provider_credentials::save_api_key(&db, &provider, &key).map_err(|e| e.to_string())?;
+    Ok(crate::provider_credentials::list_infos(&db)
+        .remove(&provider)
+        .ok_or_else(|| "imported credential not found after save".to_string())?)
+}
+
+#[tauri::command]
+pub fn list_provider_credentials() -> Result<std::collections::HashMap<String, crate::provider_credentials::ProviderCredentialInfo>, String> {
+    Ok(crate::provider_credentials::list_infos(&credentials_db_path()))
+}
+
+#[tauri::command]
+pub fn save_provider_config(
+    provider: String,
+    base_url: Option<String>,
+    default_model: Option<String>,
+) -> Result<(), String> {
+    crate::provider_credentials::save_config(
+        &credentials_db_path(),
+        &provider,
+        base_url.as_deref(),
+        default_model.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn delete_provider_api_key(provider: String) -> Result<bool, String> {
+    crate::provider_credentials::delete_api_key(&credentials_db_path(), &provider)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteModelsInput {
+    /// Free-form description of the task (inferred into a routing request).
+    #[serde(default)]
+    pub task: Option<String>,
+    /// Explicit routing request; takes precedence over `task` inference.
+    #[serde(default)]
+    pub request: Option<crate::model_router::RoutingRequest>,
+}
+
+#[tauri::command]
+pub fn route_models(input: RouteModelsInput) -> Result<crate::model_router::RoutingDecision, String> {
+    let catalog = AppState::global().model_catalog();
+    let request = match input.request {
+        Some(r) => r,
+        None => {
+            let desc = input.task.unwrap_or_default();
+            crate::model_router::infer_request(&desc)
+        }
+    };
+    Ok(crate::model_router::ModelRouter::new().route_live(catalog, &request))
+}
+
+#[tauri::command]
+pub fn infer_routing_request(task: String) -> Result<crate::model_router::RoutingRequest, String> {
+    Ok(crate::model_router::infer_request(&task))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorStepInput {
+    pub goal: String,
+    pub step: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorStepResponse {
+    pub decision: crate::dynamic_orchestrator::OrchestratorDecision,
+    pub success: bool,
+    pub output: serde_json::Value,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub fn run_orchestrator_step(input: OrchestratorStepInput) -> Result<OrchestratorStepResponse, String> {
+    use crate::agent_runtime::LocalAgentRuntime;
+    let state = AppState::global();
+    let orchestrator = crate::dynamic_orchestrator::DynamicOrchestrator::default();
+    let runtime = LocalAgentRuntime;
+    let (result, decision) = orchestrator.dispatch(
+        &input.goal,
+        &input.step,
+        state.model_catalog(),
+        &runtime,
+        None,
+        "interactive",
+    );
+    match result {
+        Ok(agent_result) => Ok(OrchestratorStepResponse {
+            decision,
+            success: agent_result.success,
+            output: agent_result.output,
+            error: agent_result.error,
+        }),
+        Err(e) => Ok(OrchestratorStepResponse {
+            decision,
+            success: false,
+            output: serde_json::Value::Null,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorAutonomousInput {
+    pub goal: String,
+    pub initial_step: Option<String>,
+    #[serde(default)]
+    pub max_steps: Option<usize>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorAutonomousResponse {
+    pub completed: bool,
+    pub aborted: bool,
+    pub steps: Vec<String>,
+}
+
+/// Run the dynamic orchestrator autonomously: it decides, dispatches, and
+/// re-decides each step until the goal is judged complete, a step fails, or
+/// the step budget is exhausted. Budget is clamped to 1..=10.
+#[tauri::command]
+pub fn run_orchestrator_autonomous(
+    input: OrchestratorAutonomousInput,
+) -> Result<OrchestratorAutonomousResponse, String> {
+    use crate::agent_runtime::LocalAgentRuntime;
+    let state = AppState::global();
+    let orchestrator = crate::dynamic_orchestrator::DynamicOrchestrator::default();
+    let runtime = LocalAgentRuntime;
+    let max_steps = input.max_steps.unwrap_or(5).clamp(1, 10);
+    let report = orchestrator.run_until_done(
+        &input.goal,
+        input.initial_step.as_deref().unwrap_or(""),
+        max_steps,
+        state.model_catalog(),
+        &runtime,
+        None,
+        "interactive",
+    );
+    Ok(OrchestratorAutonomousResponse {
+        completed: report.completed,
+        aborted: report.aborted,
+        steps: report.steps,
+    })
+}
+
+
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn pause_pipeline(run_id: String) -> Result<bool, String> {

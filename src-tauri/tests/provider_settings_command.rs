@@ -8,6 +8,7 @@ fn settings_command_persists_provider_settings() {
     let settings = ProviderSettings {
         id: "cmd-1".into(),
         provider: "openai".into(),
+        model: None,
         api_key: String::new(),
         enabled: true,
     };

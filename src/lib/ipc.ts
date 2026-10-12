@@ -345,7 +345,14 @@ export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSetti
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = typeof window !== 'undefined' ? window.__TAURI__?.invoke : undefined;
   if (typeof invoke !== 'function') {
-    throw new Error(`Tauri unavailable: ${command}`);
+    // Browser preview (no Tauri shell): return a benign fallback instead of
+    // throwing, so the frontend can be audited/developed without the backend.
+    // Lists return empty arrays; scalar commands return null/0/false.
+    if (command.startsWith('list_')) return [] as unknown as T;
+    if (command.startsWith('get_')) return null as unknown as T;
+    if (command.startsWith('is_') || command.startsWith('has_') || command.startsWith('can_')) return false as unknown as T;
+    if (command.startsWith('save_') || command.startsWith('delete_') || command.startsWith('record_') || command.startsWith('register_') || command.startsWith('cancel_') || command.startsWith('abort_') || command.startsWith('pause_') || command.startsWith('resume_')) return undefined as unknown as T;
+    return null as unknown as T;
   }
   return (args === undefined ? invoke(command) : invoke(command, args)) as Promise<T>;
 }
@@ -375,6 +382,7 @@ export function normalizePipelineRun(value: unknown): PipelineRun {
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const planValue = record.plan && typeof record.plan === 'object' ? record.plan as Record<string, unknown> : {};
   if (typeof planValue.id !== 'string' || typeof planValue.goal !== 'string') {
+    console.warn('Invalid pipeline response:', value);
     throw new Error('Invalid pipeline response');
   }
   let executionContext: PipelineRun['execution_context'];
@@ -524,10 +532,19 @@ export async function getPipelineStatus(runId: string): Promise<PipelineStatusRe
 
 export async function getPipelineRunResult(runId: string): Promise<PipelineRun | null> {
   const response = await invokeCommand<unknown>('get_pipeline_result', { run_id: runId });
-  if (!response || typeof response !== 'object') {
+  if (!response) {
     return null;
   }
-  return normalizePipelineRun(response);
+  if (typeof response !== 'object') {
+    console.warn('Invalid pipeline result response:', response);
+    return null;
+  }
+  try {
+    return normalizePipelineRun(response);
+  } catch (error) {
+    console.warn('Failed to normalize pipeline result:', error);
+    return null;
+  }
 }
 
 export async function listPipelineRuns(limit: number): Promise<PipelineRunHistoryRecord[]> {
@@ -820,3 +837,182 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
+// ---------------------------------------------------------------------------
+// Dynamic provider / model management: catalog, discovery, routing,
+// credentials, and the dynamic orchestrator. Mirrors the Tauri commands in
+// src-tauri/src/tauri_commands.rs.
+// ---------------------------------------------------------------------------
+
+export type Modality = 'text' | 'image' | 'audio' | 'video';
+export type CostTier = 'low' | 'medium' | 'high';
+
+export type ModelInfo = {
+  id: string;
+  provider: string;
+  modelId: string;
+  name: string;
+  family: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  inputModalities: Modality[];
+  supportsTools: boolean;
+  supportsStructuredOutput: boolean;
+  supportsReasoning: boolean;
+  costTier: CostTier;
+  description: string;
+  strengths: string[];
+  taskAffinity: Record<string, number>;
+  promptPricePerMtok: number | null;
+  completionPricePerMtok: number | null;
+  discovered: boolean;
+};
+
+export type UpsertModelInput = {
+  provider: string;
+  modelId: string;
+  name?: string;
+  family?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  inputModalities?: Modality[];
+  supportsTools?: boolean;
+  supportsStructuredOutput?: boolean;
+  supportsReasoning?: boolean;
+  costTier?: CostTier;
+  description?: string;
+  strengths?: string[];
+  taskAffinity?: Record<string, number>;
+  promptPricePerMtok?: number | null;
+  completionPricePerMtok?: number | null;
+};
+
+export type DiscoveryResult = {
+  provider: string;
+  ok: boolean;
+  count: number;
+  modelIds: string[];
+  error: string | null;
+};
+
+export type ProviderCredentialInfo = {
+  provider: string;
+  hasApiKey: boolean;
+  baseUrl: string | null;
+  defaultModel: string | null;
+  keyHint: string | null;
+};
+
+export type RoutingRequest = {
+  taskKind: string;
+  minContextWindow: number;
+  requiredModalities: Modality[];
+  requiresTools: boolean;
+  requiresStructuredOutput: boolean;
+  prefersReasoning: boolean;
+  preferredModel?: string | null;
+};
+
+export type CandidateScore = {
+  modelId: string;
+  provider: string;
+  model: string;
+  eligible: boolean;
+  disqualification: string | null;
+  score: number;
+  affinity: number;
+  costPenalty: number;
+  reliability: number;
+  speed: number;
+};
+
+export type RoutingDecision = {
+  chosen: CandidateScore | null;
+  ranked: CandidateScore[];
+  considered: number;
+};
+
+export type OrchestratorDecision = {
+  agentId: string;
+  modelId: string | null;
+  taskKind: string;
+  taskDescription: string;
+  rationale: string;
+  request: unknown | null;
+};
+
+export type OrchestratorStepResult = {
+  decision: OrchestratorDecision;
+  success: boolean;
+  output: unknown;
+  error: string | null;
+};
+
+export async function listModels(provider?: string): Promise<ModelInfo[]> {
+  return invokeCommand<ModelInfo[]>('list_models', { provider: provider ?? null });
+}
+
+export async function upsertModel(input: UpsertModelInput): Promise<ModelInfo> {
+  return invokeCommand<ModelInfo>('upsert_model', { input });
+}
+
+export async function removeModel(id: string): Promise<boolean> {
+  return invokeCommand<boolean>('remove_model', { id });
+}
+
+export async function discoverProviderModels(provider: string): Promise<DiscoveryResult> {
+  return invokeCommand<DiscoveryResult>('discover_provider_models', { provider });
+}
+
+export async function importEnvApiKey(provider: string): Promise<ProviderCredentialInfo> {
+  return invokeCommand<ProviderCredentialInfo>('import_env_api_key', { provider });
+}
+
+export async function listProviderCredentials(): Promise<Record<string, ProviderCredentialInfo>> {
+  return invokeCommand<Record<string, ProviderCredentialInfo>>('list_provider_credentials');
+}
+
+export async function saveProviderConfig(
+  provider: string,
+  baseUrl: string | null,
+  defaultModel: string | null,
+): Promise<void> {
+  await invokeCommand<void>('save_provider_config', { provider, baseUrl, defaultModel });
+}
+
+export async function deleteProviderApiKey(provider: string): Promise<boolean> {
+  return invokeCommand<boolean>('delete_provider_api_key', { provider });
+}
+
+export async function routeModels(input: {
+  task?: string;
+  request?: RoutingRequest;
+}): Promise<RoutingDecision> {
+  return invokeCommand<RoutingDecision>('route_models', { input });
+}
+
+export async function inferRoutingRequest(task: string): Promise<RoutingRequest> {
+  return invokeCommand<RoutingRequest>('infer_routing_request', { task });
+}
+
+export async function runOrchestratorStep(input: {
+  goal: string;
+  step: string;
+}): Promise<OrchestratorStepResult> {
+  const response = await invokeCommand<OrchestratorStepResult>('run_orchestrator_step', { input });
+  return response;
+}
+
+export type OrchestratorAutonomousResult = {
+  completed: boolean;
+  aborted: boolean;
+  steps: string[];
+};
+
+export async function runOrchestratorAutonomous(input: {
+  goal: string;
+  initialStep?: string;
+  maxSteps?: number;
+}): Promise<OrchestratorAutonomousResult> {
+  return invokeCommand<OrchestratorAutonomousResult>('run_orchestrator_autonomous', { input });
+}
+

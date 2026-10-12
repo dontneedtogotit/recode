@@ -63,6 +63,18 @@ fn main() {
             recode::tauri_commands::list_providers,
             recode::tauri_commands::delete_provider,
             recode::tauri_commands::get_provider_selection_status,
+            recode::tauri_commands::list_models,
+            recode::tauri_commands::upsert_model,
+            recode::tauri_commands::remove_model,
+            recode::tauri_commands::discover_provider_models,
+            recode::tauri_commands::import_env_api_key,
+            recode::tauri_commands::list_provider_credentials,
+            recode::tauri_commands::save_provider_config,
+            recode::tauri_commands::delete_provider_api_key,
+            recode::tauri_commands::route_models,
+            recode::tauri_commands::infer_routing_request,
+            recode::tauri_commands::run_orchestrator_step,
+            recode::tauri_commands::run_orchestrator_autonomous,
         ])
         .on_menu_event(|app, event| {
             let _ = event;

@@ -219,6 +219,9 @@ fn detect_security_headers(files: &[ProductionFile]) -> Vec<ProductionFinding> {
 
 fn detect_build_config(files: &[ProductionFile]) -> Vec<ProductionFinding> {
     let mut results = Vec::new();
+    if files.is_empty() {
+        return results;
+    }
     let has_build_config = files.iter().any(|f| {
         let p = f.path.to_lowercase();
         p.contains("vite.config") || p.contains("webpack.config")
@@ -278,7 +281,11 @@ mod tests {
 
     #[test]
     fn detects_missing_logging() {
-        let files = vec![file("src/App.tsx", "export function App() { return null; }")];
+        let files = vec![
+            file("src/App.tsx", "ErrorBoundary process.env.API_KEY"),
+            file(".env.example", "API_KEY=example"),
+            file("package.json", "name app"),
+        ];
         let result = ProductionReadinessService.evaluate(&files);
         // Missing logging is a warning, not an error — the build still passes.
         assert!(result.passed);

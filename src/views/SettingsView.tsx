@@ -12,13 +12,14 @@ import { executeAgentTask } from '../hooks/useAgentRuntimeExecution';
 import { checkUpdates } from '../hooks/useUpdater';
 import { runIpcBenchmark, type IpcBenchmarkResult } from '../hooks/useIpcBenchmark';
 import { deleteProvider, listProviders, type ProviderSettings } from '../hooks/useProviderSettings';
+import { ModelsPanel } from '../components/ModelsPanel';
 
 type SettingsViewProps = {
   runState?: RunState;
   onRunAgentTask?: (agentId: string, input: string) => void;
 };
 
-type SettingsSection = 'runtime' | 'providers' | 'maintenance';
+type SettingsSection = 'runtime' | 'providers' | 'models' | 'maintenance';
 
 const BENCHMARK_HISTORY_KEY = 'recode.benchmarkHistory';
 
@@ -182,7 +183,7 @@ export default function SettingsView({ runState: _runState, onRunAgentTask: _onR
       </div>
 
       <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        {(['runtime', 'providers', 'maintenance'] as const).map((section) => (
+        {(['runtime', 'providers', 'models', 'maintenance'] as const).map((section) => (
           <button
             key={section}
             type="button"
@@ -191,7 +192,7 @@ export default function SettingsView({ runState: _runState, onRunAgentTask: _onR
             className={`settings-tab ${settingsSection === section ? 'active' : ''}`}
             onClick={() => setSettingsSection(section)}
           >
-            {section === 'runtime' ? 'Runtime' : section === 'providers' ? 'Providers' : 'Maintenance'}
+            {section === 'runtime' ? 'Runtime' : section === 'providers' ? 'Providers' : section === 'models' ? 'Models' : 'Maintenance'}
           </button>
         ))}
       </div>
@@ -263,6 +264,8 @@ export default function SettingsView({ runState: _runState, onRunAgentTask: _onR
 
         </Card>
       )}
+
+      {settingsSection === 'models' && <ModelsPanel />}
 
       {settingsSection === 'maintenance' && (
         <Card className="settings-panel">

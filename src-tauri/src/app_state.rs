@@ -27,12 +27,14 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use crate::pipeline::progress_tracker::ProgressTracker;
+use crate::model_catalog::ModelCatalog;
 
 #[derive(Debug)]
 pub struct AppState {
     pub connection: Mutex<rusqlite::Connection>,
     pub monitor: &'static DefaultRuntimeMonitorService,
     pub progress_tracker: ProgressTracker,
+    pub model_catalog: ModelCatalog,
 }
 
 impl AppState {
@@ -42,6 +44,7 @@ impl AppState {
             connection,
             monitor: crate::runtime_monitor::service(),
             progress_tracker: ProgressTracker::new(),
+            model_catalog: ModelCatalog::with_builtins(),
         };
         {
             let conn = state.db();
@@ -109,6 +112,10 @@ impl AppState {
 
     pub fn run_identities(&self) -> RunIdentityStore<'_> {
         RunIdentityStore { state: self }
+    }
+
+    pub fn model_catalog(&self) -> &ModelCatalog {
+        &self.model_catalog
     }
 
     pub fn db(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
@@ -480,6 +487,7 @@ mod tests {
             .save_provider(&crate::provider_settings::ProviderSettings {
                 id: "ps-1".into(),
                 provider: "openai".into(),
+                model: None,
                 api_key: String::new(),
                 enabled: true,
             })
