@@ -188,6 +188,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         assert_eq!(manifest.run_id, "run-1");
@@ -207,6 +208,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             },
         );
         assert!(result.is_err());
@@ -221,6 +223,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let mut last_wave = 0u8;
@@ -239,6 +242,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let app = manifest.files.iter().find(|f| f.path == "src/App.tsx").unwrap();
@@ -264,6 +268,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let main = manifest.files.iter().find(|f| f.path == "src/main.tsx").unwrap();
@@ -285,6 +290,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let dep_files: Vec<super::super::manifest_budget::DependencyFile> = manifest
@@ -322,6 +328,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let total_tokens: usize = manifest.files.iter().map(file_max_tokens).sum();
@@ -344,6 +351,7 @@ mod tests {
                 emit_events: false,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("manifest");
         let json = serde_json::to_string(&manifest).unwrap();

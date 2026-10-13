@@ -67,6 +67,7 @@ function AppContent() {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [runState, setRunState] = useState<RunState>({ status: 'idle' });
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [verifierConsent, setVerifierConsent] = useState<'not-supplied' | 'granted' | 'denied'>('not-supplied');
   const [briefReview, setBriefReview] = useState<BriefReviewRequest | null>(null);
   const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
   const { execute, cancel, loading, result, events, activeRunId } = useRunPipeline();
@@ -229,8 +230,13 @@ function AppContent() {
     processedPipelineEventsRef.current = 0;
     setRunState({ status: 'running', goal: trimmedGoal });
     setConsoleEntries([{ id: `run-start-${Date.now()}`, source: 'pipeline', level: 'info', message: `Run started: ${trimmedGoal}`, ts: Date.now() }]);
-    void execute({ goal: trimmedGoal, emit_events: true, ...(selectedWorkspaceId ? { project_id: selectedWorkspaceId } : {}) });
-  }, [execute, selectedWorkspaceId, loading, runState.status, briefReview]);
+    void execute({
+      goal: trimmedGoal,
+      emit_events: true,
+      execution_consent: verifierConsent,
+      ...(selectedWorkspaceId ? { project_id: selectedWorkspaceId } : {}),
+    });
+  }, [execute, selectedWorkspaceId, verifierConsent, loading, runState.status, briefReview]);
 
   const handleReviewBrief = useCallback((request: BriefReviewRequest) => {
     if (!request.goal.trim() || loading || runState.status === 'running') return;
@@ -433,6 +439,8 @@ const densities: { value: 'compact' | 'comfortable'; label: string }[] = [
               onBriefReviewed={() => setBriefReview(null)}
               onNavigate={setView}
               onWorkspaceSelected={setSelectedWorkspaceId}
+              verifierConsent={verifierConsent}
+              onVerifierConsentChange={setVerifierConsent}
               onOpenRunner={() => {
                 setView('runner');
               }}

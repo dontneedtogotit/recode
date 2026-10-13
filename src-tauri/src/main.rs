@@ -1,4 +1,34 @@
+fn normalize_fractional_scaling() {
+    // On Wayland (or XWayland) the compositor owns display scaling and applies
+    // it to X11/XWayland windows at the monitor's (possibly fractional) factor.
+    // GTK3/webkit2gtk additionally honor the *integer* GDK_SCALE env var, so an
+    // inherited GDK_SCALE=2 makes the webview render at 2x on top of the
+    // compositor's own (e.g. 1.6x) scale -- everything ends up ~25% too big.
+    // Force GDK_SCALE=1 so the webview matches the rest of the desktop, which
+    // the compositor scales itself. Under pure X11 (no Wayland) we leave it
+    // alone, where GDK_SCALE is the only scaling mechanism.
+    let on_wayland = std::env::var_os("XDG_SESSION_TYPE")
+        .as_deref()
+        .map(|t| t.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false)
+        || std::env::var_os("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+    if !on_wayland {
+        return;
+    }
+    let scale: u32 = std::env::var("GDK_SCALE")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1);
+    if scale > 1 {
+        std::env::set_var("GDK_SCALE", "1");
+        std::env::set_var("GDK_DPI_SCALE", "1");
+    }
+}
+
 fn main() {
+    normalize_fractional_scaling();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             recode::tauri_commands::create_workspace,
@@ -10,6 +40,9 @@ fn main() {
             recode::tauri_commands::validate_workspace_path,
             recode::tauri_commands::create_and_execute_plan,
             recode::tauri_commands::run_pipeline,
+            recode::tauri_commands::reconcile_workspace,
+            recode::tauri_commands::install_dependencies,
+            recode::tauri_commands::verify_build,
             recode::tauri_commands::cancel_pipeline,
             recode::tauri_commands::pause_pipeline,
             recode::tauri_commands::resume_pipeline,

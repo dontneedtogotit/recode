@@ -1,6 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowRight, Bot, ClipboardList, Code2, FolderOpen, Globe, History, Layers, ShieldCheck, Terminal } from 'lucide-react';
-import { createWorkspace, listWorkspaces, type WorkspaceInfo } from '../lib/ipc';
+import {
+  createWorkspace,
+  listWorkspaces,
+  reconcileWorkspace,
+  installDependencies,
+  verifyBuild,
+  type WorkspaceInfo,
+  type ExecutionConsent,
+} from '../lib/ipc';
 import { Card } from '../components/Card';
 import { Field } from '../components/Field';
 import { GatewayConfigurationCheck } from '../components/GatewayConfigurationCheck';
@@ -17,6 +25,8 @@ type ProjectViewProps = {
   onNavigate?: (view: View) => void;
   briefReview?: BriefReviewRequest | null;
   onBriefReviewed?: () => void;
+  verifierConsent?: ExecutionConsent;
+  onVerifierConsentChange?: (consent: ExecutionConsent) => void;
 };
 
 const RECENT_GOALS_KEY = 'recode.recentGoals';
@@ -31,7 +41,7 @@ const STARTERS = [
   { title: 'Internal tool', description: 'Data tables, filters & workflows', icon: Layers, goal: 'Build an internal tool for [team] to manage [records]. Include a searchable table, detail view, create/edit forms, and empty states. Add tests for filtering and validation.' },
 ] as const;
 
-export default function ProjectView({ onOpenRunner, onWorkspaceSelected, runState, onRunGoal, loading, onNavigate, briefReview, onBriefReviewed }: ProjectViewProps) {
+export default function ProjectView({ onOpenRunner, onWorkspaceSelected, runState, onRunGoal, loading, onNavigate, briefReview, onBriefReviewed, verifierConsent, onVerifierConsentChange }: ProjectViewProps) {
   const goalRef = useRef<HTMLTextAreaElement>(null);
   const reviewRef = useRef<HTMLElement>(null);
   const [creating, setCreating] = useState(false);
@@ -48,6 +58,9 @@ export default function ProjectView({ onOpenRunner, onWorkspaceSelected, runStat
     } catch { setStorageError(true); }
   }, []);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<'reconcile' | 'install' | 'verify' | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [recentGoals, setRecentGoals] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
       const stored = readStoredValue(RECENT_GOALS_KEY);
@@ -119,6 +132,57 @@ export default function ProjectView({ onOpenRunner, onWorkspaceSelected, runStat
       setCreating(false);
     }
   };
+
+  const runWorkspaceAction = useCallback(async (
+    action: 'reconcile' | 'install' | 'verify',
+    run: () => Promise<string>,
+  ) => {
+    if (actionBusy || workspaceLoading) return;
+    setActionBusy(action);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const message = await run();
+      setActionMessage(message);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `${action} failed`);
+    } finally {
+      setActionBusy(null);
+    }
+  }, [actionBusy, workspaceLoading]);
+
+  const handleReconcile = useCallback(() => {
+    const id = selectedWorkspace?.id;
+    if (!id) return;
+    void runWorkspaceAction('reconcile', async () => {
+      const report = await reconcileWorkspace(id);
+      return report.modified_count > 0
+        ? `Reconciled: ${report.modified_count} file(s) modified — ${report.summary}`
+        : `Reconciled: no changes needed — ${report.summary}`;
+    });
+  }, [selectedWorkspace, runWorkspaceAction]);
+
+  const handleInstall = useCallback(() => {
+    const id = selectedWorkspace?.id;
+    if (!id) return;
+    void runWorkspaceAction('install', async () => {
+      const result = await installDependencies(id, 'granted');
+      return result.note || 'Install: nothing to do (no package.json or already installed).';
+    });
+  }, [selectedWorkspace, runWorkspaceAction]);
+
+  const handleVerify = useCallback(() => {
+    const id = selectedWorkspace?.id;
+    if (!id) return;
+    void runWorkspaceAction('verify', async () => {
+      const report = await verifyBuild(id, 'granted');
+      const passed = report.results.filter((gate) => gate.passed).length;
+      const summary = report.summary || `${passed}/${report.results.length} gates passed`;
+      return report.results.length === 0
+        ? 'Verify: no gates ran (empty workspace).'
+        : `Verify: ${passed}/${report.results.length} gates passed — ${summary}`;
+    });
+  }, [selectedWorkspace, runWorkspaceAction]);
 
   const handleRun = useCallback((nextGoal?: string) => {
     const trimmed = (nextGoal ?? goal).trim();
@@ -224,6 +288,32 @@ export default function ProjectView({ onOpenRunner, onWorkspaceSelected, runStat
             </Field>
             {workspaceLoading && <span className="text-xs text-secondary" role="status">Loading workspaces…</span>}
             {selectedWorkspace && <div className="workspace-root"><span className="metric-label">Managed project root</span><code>{selectedWorkspace.root}</code></div>}
+            {selectedWorkspace && (
+              <div className="stack-sm workspace-actions">
+                <div className="action-button-row">
+                  <button type="button" className="secondary" onClick={handleReconcile} disabled={busy || creating || workspaceLoading || actionBusy !== null}>
+                    {actionBusy === 'reconcile' ? 'Reconciling…' : 'Reconcile files'}
+                  </button>
+                  <button type="button" className="secondary" onClick={handleInstall} disabled={busy || creating || workspaceLoading || actionBusy !== null}>
+                    {actionBusy === 'install' ? 'Installing…' : 'Install dependencies'}
+                  </button>
+                  <button type="button" className="secondary" onClick={handleVerify} disabled={busy || creating || workspaceLoading || actionBusy !== null}>
+                    {actionBusy === 'verify' ? 'Verifying…' : 'Verify build'}
+                  </button>
+                </div>
+                {actionMessage && <div className="action-message" role="status">{actionMessage}</div>}
+                {actionError && <div className="workspace-error" role="alert">{actionError}</div>}
+              </div>
+            )}
+            <label className="consent-toggle">
+              <input
+                type="checkbox"
+                checked={verifierConsent === 'granted'}
+                disabled={!onVerifierConsentChange || busy}
+                onChange={() => onVerifierConsentChange?.(verifierConsent === 'granted' ? 'not-supplied' : 'granted')}
+              />
+              <span>Allow supervised verifier commands (type-check, build, test) for generated runs</span>
+            </label>
             <form className="stack-sm workspace-create" onSubmit={(event) => { event.preventDefault(); void handleCreateWorkspace(); }}>
               <Field label="New workspace id" htmlFor="new-workspace-id"><input id="new-workspace-id" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="my-project" disabled={busy || creating} /></Field>
               <button type="submit" className="secondary" disabled={!workspaceId.trim() || busy || creating || workspaceLoading}>{creating ? 'Creating…' : 'Create workspace'}</button>

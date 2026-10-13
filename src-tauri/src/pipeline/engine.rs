@@ -67,11 +67,14 @@ pub enum PipelineState {
 pub struct LocalPipelineEngine<'a> {
     pub event_bus: &'a EventBus,
     pub self_heal: &'a dyn SelfHealService,
+    /// Scoped consent for supervised verifier subprocesses; threaded through
+    /// to [`Self::run_verification`]. Defaults to `NotSupplied`.
+    pub execution_consent: crate::pipeline::supervisor::ExecutionConsent,
 }
 
 impl<'a> LocalPipelineEngine<'a> {
     pub fn new(event_bus: &'a EventBus, self_heal: &'a dyn SelfHealService) -> Self {
-        Self { event_bus, self_heal }
+        Self { event_bus, self_heal, execution_consent: Default::default() }
     }
 
     pub fn run_with_cancellation(
@@ -277,6 +280,7 @@ impl<'a> LocalPipelineEngine<'a> {
             emit_events: false,
             run_id: "manifest".into(),
             project_id: None,
+            execution_consent: self.execution_consent,
         };
         let manifest_service = crate::pipeline::manifest::LocalGenerationManifestService::new();
         let manifest = match manifest_service.build(&manifest_input.run_id, &manifest_input) {
@@ -679,8 +683,8 @@ impl<'a> LocalPipelineEngine<'a> {
         } else {
             summary
         };
-        let (verification_results, verification_summary) = self
-            .run_verification(workspace_root, &generated);
+        let (verification_results, verification_summary) =
+            self.run_verification(workspace_root, &generated, self.execution_consent);
 
         // Adaptive repair service: suggest repairs based on failed checks and
         // generated file content (ported from devcode AdaptiveRepairService).
@@ -900,31 +904,51 @@ impl<'a> LocalPipelineEngine<'a> {
         &self,
         workspace_root: Option<&Path>,
         files: &[GeneratedFile],
+        consent: crate::pipeline::supervisor::ExecutionConsent,
     ) -> (Vec<crate::pipeline::verify::VerificationResult>, String) {
         let root = match workspace_root {
             Some(root) => root,
             None => return (Vec::new(), String::new()),
         };
-        let stages: Vec<Box<dyn crate::pipeline::verify::VerificationStage + Send + Sync>> =
-            vec![Box::new(DefaultVerificationStage)];
+        // Only granted consent ever probes runners, installs dependencies
+        // or spawns generated code. Missing runners are unknown, never
+        // executed failures.
+        let (npm_version, node_version) = if consent.is_granted() {
+            (
+                super::verifiers::supervised_tool_version("npm", root),
+                super::verifiers::supervised_tool_version("node", root),
+            )
+        } else {
+            (None, None)
+        };
+        // Prerequisite for the script gates on a fresh workspace: a bounded,
+        // supervised dependency install (the F07 network/script consent
+        // above covers this step). Skipped when node_modules already exists.
+        let install_note = super::verifiers::install_step(root, consent);
+        let stages: Vec<Box<dyn crate::pipeline::verify::VerificationStage + Send + Sync>> = vec![
+            Box::new(DefaultVerificationStage),
+            Box::new(super::verifiers::SupervisedScriptStage::typecheck(consent, npm_version.clone())),
+            Box::new(super::verifiers::SupervisedScriptStage::bundle(consent, npm_version.clone())),
+            Box::new(super::verifiers::SupervisedScriptStage::tests(consent, npm_version)),
+            Box::new(super::verifiers::StartupBootStage::new(consent, node_version)),
+        ];
         let mut results: Vec<_> = verify_workspace(&stages, root, files).into_iter().map(|result| {
+            // Stages that ran supervised commands attach their own complete
+            // evidence; only wrap the plain in-process results.
+            if result.evidence.is_some() {
+                return result;
+            }
             let status = if result.passed { GateStatus::Passed } else { GateStatus::Failed };
             result.with_required_evidence(status, Some(true))
         }).collect();
-        // Do not spawn generated code until scoped consent and a bounded
-        // supervisor exist. Missing runners are unknown, never executed failures.
-        for gate in REQUIRED_GATES.iter().filter(|gate| **gate != "persistence") {
-            results.push(VerificationResult::unknown(
-                gate,
-                "Not executed: approved manifest, scoped execution consent and supervised verifier are not yet available.",
-                None,
-            ));
-        }
-        let summary = results
+        let mut summary = results
             .iter()
             .map(|result| format!("{}: {}", result.gate, result.detail))
             .collect::<Vec<_>>()
             .join("; ");
+        if !install_note.is_empty() {
+            summary = format!("{install_note}; {summary}");
+        }
         (results, summary)
     }
 

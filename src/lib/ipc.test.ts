@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   attemptSelfHeal,
   cancelPipeline,
+  isTauriAvailable,
+  saveProviderApiKey,
+
   pausePipeline,
   resumePipeline,
   abortPipeline,
@@ -51,6 +54,28 @@ import { DEFAULT_REPLACEMENT_CRITERIA, meetsAll, unmetCount } from './replacemen
 describe('executeAgentTask', () => {
   afterEach(() => {
     delete (globalThis as { __TAURI__?: unknown }).__TAURI__;
+  });
+
+  it('resolves the Tauri v2 core.invoke global (the pre-fix bug left every command silently falling back to preview stubs)', async () => {
+    // Tauri 2 ships invoke at __TAURI__.core.invoke, NOT __TAURI__.invoke.
+    // Before the fix, save_* commands hit the browser-preview fallback and
+    // returned undefined, crashing ModelsPanel at info.baseUrl and never
+    // storing the key. This is the regression test for that exact shape.
+    const invoke = vi.fn().mockResolvedValue({
+      provider: 'openrouter',
+      hasApiKey: true,
+      baseUrl: 'https://openrouter.ai/api/v1',
+      keyHint: 'sk-or-…abcd',
+    });
+    (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+
+    expect(isTauriAvailable()).toBe(true);
+    const info = await saveProviderApiKey('openrouter', 'sk-or-test');
+    expect(invoke).toHaveBeenCalledWith('save_provider_api_key', {
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+    });
+    expect(info.baseUrl).toBe('https://openrouter.ai/api/v1');
   });
 
   it('uses the backend field names and normalizes the response', async () => {

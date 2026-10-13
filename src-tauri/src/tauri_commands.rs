@@ -488,6 +488,100 @@ pub fn cancel_pipeline(run_id: String) -> Result<bool, String> {
     }
 }
 
+/// Report of the workspace reconciliation command (ROADMAP 1.1): every
+/// reconciler's result plus an aggregate summary.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReconciliationReport {
+    pub results: Vec<crate::workspace::reconciler::ReconciliationResult>,
+    pub modified_count: usize,
+    pub summary: String,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn reconcile_workspace(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ReconciliationReport, String> {
+    let root = workspace_for_id(&app, &project_id)?;
+    let results = crate::workspace::reconciler::ReconciliationPipeline::default().run(&root);
+    let modified_count = results.iter().filter(|result| result.modified).count();
+    let summary = results
+        .iter()
+        .map(|result| format!("{}: {}", result.reconciler, result.summary))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Ok(ReconciliationReport { results, modified_count, summary })
+}
+
+/// Result of the consented dependency-install command (ROADMAP 1.1, F07).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InstallResult {
+    /// Human-readable note; empty when nothing ran (already installed, no
+    /// package.json, or consent not granted).
+    pub note: String,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn install_dependencies(
+    app: tauri::AppHandle,
+    project_id: String,
+    consent: crate::pipeline::supervisor::ExecutionConsent,
+) -> Result<InstallResult, String> {
+    let root = workspace_for_id(&app, &project_id)?;
+    // npm install can run for minutes; keep it off the main thread.
+    let note = tauri::async_runtime::spawn_blocking(move || {
+        crate::pipeline::verifiers::install_step(&root, consent)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(InstallResult { note })
+}
+
+/// Report of the standalone build-verification command (ROADMAP 1.3): the
+/// per-gate results with supervised execution receipts plus a summary.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BuildVerificationReport {
+    pub results: Vec<crate::pipeline::verify::VerificationResult>,
+    pub summary: String,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn verify_build(
+    app: tauri::AppHandle,
+    project_id: String,
+    consent: crate::pipeline::supervisor::ExecutionConsent,
+) -> Result<BuildVerificationReport, String> {
+    let root = workspace_for_id(&app, &project_id)?;
+    // Verify the current on-disk workspace state: list real files and mark
+    // them Written so the persistence stage re-reads and compares bytes.
+    let files = LocalWorkspaceService
+        .list_project_files(&root)
+        .map_err(|error| error.to_string())?;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let generated: Vec<crate::pipeline::types::GeneratedFile> = files
+            .into_iter()
+            .map(|file| crate::pipeline::types::GeneratedFile {
+                path: file.path,
+                content: file.content,
+                language: file.language,
+                status: crate::pipeline::types::GeneratedFileStatus::Written,
+                error: None,
+            })
+            .collect();
+        // Standalone engine, mirroring the per-run construction in
+        // LocalPipelineService::run_with_control. run_verification only
+        // probes runners under granted consent, so the bus stays quiet.
+        let (bus, _receiver) = crate::event_bus::EventBus::new();
+        let heal = DefaultSelfHealService;
+        let engine = crate::pipeline::engine::LocalPipelineEngine::new(&bus, &heal);
+        let (results, summary) = engine.run_verification(Some(root.as_path()), &generated, consent);
+        BuildVerificationReport { results, summary }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(report)
+}
+
 #[tauri::command]
 pub fn create_and_execute_plan(input: SavePlanInput) -> Result<Plan, String> {
     let planner = LocalPlanner::new();

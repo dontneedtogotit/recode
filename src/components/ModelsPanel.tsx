@@ -163,14 +163,14 @@ export function ModelsPanel() {
       provider,
       async () => {
         const info = await saveProviderApiKey(provider, raw);
-        setKeyEntry((prev) => {
-          const next = { ...prev };
-          delete next[provider];
-          return next;
-        });
-        if (!info.baseUrl) {
-          setNotice(`Key stored for ${provider}. Set a base URL (or leave it — known providers use a built-in default) before discovering.`);
-        }
+                  setKeyEntry((prev) => {
+                    const next = { ...prev };
+                    delete next[provider];
+                    return next;
+                  });
+                  if (!info || !info.baseUrl) {
+                    setNotice(`Key stored for ${provider}. Set a base URL (or leave it — known providers use a built-in default) before discovering.`);
+                  }
       },
       `API key stored locally for ${provider}.`,
     );

@@ -18,7 +18,7 @@ use crate::planner::LocalPlanner;
 #[cfg(test)]
 use crate::self_heal::DefaultSelfHealService;
 
-mod engine;
+pub mod engine;
 mod manifest;
 mod generator;
 mod prompts;
@@ -58,8 +58,10 @@ mod accessibility_audit;
 mod ux_consistency;
 pub mod progress_tracker;
 pub mod executor;
-mod types;
-mod verify;
+pub mod types;
+pub mod verify;
+pub mod supervisor;
+pub mod verifiers;
 mod outcome;
 pub mod identity;
 pub mod identity_persistence;
@@ -74,6 +76,11 @@ pub struct PipelineInput {
     pub run_id: String,
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Scoped consent to run supervised verifier subprocesses (npm
+    /// install/type-check/build/test:run and the dev-server boot check) for
+    /// this run. Defaults to not supplied; only `granted` ever spawns.
+    #[serde(default)]
+    pub execution_consent: crate::pipeline::supervisor::ExecutionConsent,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -346,7 +353,10 @@ impl<'a> LocalPipelineService<'a> {
             .attempt_repair(&events)
             .map_err(|e| crate::domain::DomainError::internal(e.to_string()))?;
         let _ = self.record_plan_metrics(&plan);
-        let engine = LocalPipelineEngine::new(self.event_bus, self.self_heal);
+        let mut engine = LocalPipelineEngine::new(self.event_bus, self.self_heal);
+        // Thread the caller's verifier-subprocess consent through to the
+        // engine so only `granted` ever spawns supervised commands.
+        engine.execution_consent = input.execution_consent;
         let should_cancel = || {
             cancel.is_some_and(|token| token.load(Ordering::SeqCst))
                 || control.is_some_and(PipelineControl::is_cancelling)
@@ -412,6 +422,7 @@ mod tests {
         let result = service.run_with_control(PipelineInput {
             goal: "build a page".into(), emit_events: false, run_id: "cancel-before-generation".into(),
             project_id: Some("registered".into()),
+            execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
         }, &control);
         assert!(result.unwrap_err().to_string().contains("cancelled"));
         assert!(!root.path().join("README.md").exists());
@@ -448,6 +459,7 @@ mod tests {
                 emit_events: true,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("pipeline run");
         assert_eq!(run.plan.status, PlanStatus::Completed);
@@ -472,6 +484,7 @@ mod tests {
             emit_events: true,
             run_id: "run-1".into(),
             project_id: None,
+            execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
         });
         let mut topics = Vec::new();
         while let Ok(event) = receiver.try_recv() {
@@ -507,6 +520,7 @@ mod tests {
                 emit_events: true,
                 run_id: "run-cancel".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             },
             Some(&cancel),
         );
@@ -535,6 +549,7 @@ mod tests {
             emit_events: true,
             run_id: "run-1".into(),
             project_id: None,
+            execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
         });
         assert!(result.is_err());
         let event = receiver.recv().expect("failure event");
@@ -555,6 +570,7 @@ mod tests {
             let result = service.run_with_control(PipelineInput {
                 goal: "build app".into(), emit_events: true, run_id: "paused-run".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             }, &worker);
             let topics: Vec<_> = receiver.try_iter().map(|event| event.topic().to_string()).collect();
             (result, topics)
@@ -584,6 +600,7 @@ mod tests {
                 emit_events: true,
                 run_id: "run-1".into(),
                 project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             })
             .expect("pipeline run");
         assert_eq!(run.plan.status, PlanStatus::Completed);
@@ -597,6 +614,7 @@ mod tests {
                     emit_events: true,
                     run_id: "run-1".into(),
                     project_id: None,
+                    execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
                 },
                 None,
                 &|_goal| planner.create_plan("build landing page"),

@@ -60,7 +60,7 @@ describe('App palette integration', () => {
     expect(execute).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Simulate plan' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Simulate plan' }));
-    expect(execute).toHaveBeenCalledWith({ goal: 'review this goal', emit_events: true });
+    expect(execute).toHaveBeenCalledWith({ goal: 'review this goal', emit_events: true, execution_consent: 'not-supplied' });
   });
 
   it('lets a history review be dismissed without changing the current draft', () => {
@@ -87,7 +87,7 @@ describe('App palette integration', () => {
     fireEvent.change(input, { target: { value: 'run ship the feature' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    expect(execute).toHaveBeenCalledWith({ goal: 'ship the feature', emit_events: true });
+    expect(execute).toHaveBeenCalledWith({ goal: 'ship the feature', emit_events: true, execution_consent: 'not-supplied' });
     expect(screen.getAllByText('Running').length).toBeGreaterThan(0);
   });
 
@@ -120,7 +120,7 @@ describe('App palette integration', () => {
     await waitFor(() => expect(screen.getAllByText('/app-data/projects/demo').length).toBeGreaterThan(0));
     fireEvent.change(screen.getByPlaceholderText('Build onboarding flow'), { target: { value: 'build a page' } });
     fireEvent.click(screen.getByRole('button', { name: 'Generate files' }));
-    expect(execute).toHaveBeenCalledWith({ goal: 'build a page', emit_events: true, project_id: 'demo' });
+    expect(execute).toHaveBeenCalledWith({ goal: 'build a page', emit_events: true, execution_consent: 'not-supplied', project_id: 'demo' });
     expect(screen.queryByText('/etc')).not.toBeInTheDocument();
   });
 
@@ -131,6 +131,6 @@ describe('App palette integration', () => {
     await waitFor(() => expect(window.localStorage.getItem('recode.selectedWorkspace')).toBeNull());
     fireEvent.change(screen.getByPlaceholderText('Build onboarding flow'), { target: { value: 'simulate only' } });
     fireEvent.click(screen.getByRole('button', { name: 'Simulate plan' }));
-    expect(execute).toHaveBeenCalledWith({ goal: 'simulate only', emit_events: true });
+    expect(execute).toHaveBeenCalledWith({ goal: 'simulate only', emit_events: true, execution_consent: 'not-supplied' });
   });
 });

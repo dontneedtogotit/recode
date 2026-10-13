@@ -155,7 +155,19 @@ type TauriEvent = {
   listen?: (name: string, callback: (event: { payload: unknown }) => void) => Promise<() => void>;
 };
 
-type TauriGlobal = { invoke?: TauriInvoke; event?: TauriEvent };
+// Tauri v1 exposes `window.__TAURI__.invoke`; Tauri 2 moved it to
+// `window.__TAURI__.core.invoke` (the v1 top-level property no longer exists).
+// Resolve both so tests that mock the v1 shape keep working.
+type TauriGlobal = {
+  invoke?: TauriInvoke;
+  core?: { invoke?: TauriInvoke };
+  event?: TauriEvent;
+};
+
+function resolveTauriInvoke(): TauriInvoke | undefined {
+  const tauri = typeof window !== 'undefined' ? window.__TAURI__ : undefined;
+  return tauri?.invoke ?? tauri?.core?.invoke;
+}
 
 export type AgentTaskInput = { agentId: string } & (
   | { input: string; payload?: never }
@@ -189,7 +201,12 @@ export type PipelineInput = {
   emit_events?: boolean;
   runId?: string;
   project_id?: string | null;
+  /** Scoped consent for supervised verifier subprocesses; only 'granted' ever spawns. */
+  execution_consent?: ExecutionConsent;
 };
+
+/** Mirrors src-tauri pipeline::supervisor::ExecutionConsent (kebab-case values). */
+export type ExecutionConsent = 'not-supplied' | 'granted' | 'denied';
 
 export type PipelineStatusResponse = {
   runId: string;
@@ -301,7 +318,7 @@ declare global {
 }
 
 export function isTauriAvailable(): boolean {
-  return typeof window !== 'undefined' && typeof window.__TAURI__?.invoke === 'function';
+  return typeof resolveTauriInvoke() === 'function';
 }
 
 export function normalizePlanStepState(value: unknown): PlanStepState {
@@ -343,7 +360,8 @@ export function normalizeAgentRuntimeSettings(value: unknown): AgentRuntimeSetti
 }
 
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const invoke = typeof window !== 'undefined' ? window.__TAURI__?.invoke : undefined;
+  // Tauri 2: `window.__TAURI__.core.invoke`; Tauri 1 / test mocks: `.invoke`.
+  const invoke = resolveTauriInvoke();
   if (typeof invoke !== 'function') {
     // Browser preview (no Tauri shell): return a benign fallback instead of
     // throwing, so the frontend can be audited/developed without the backend.
@@ -501,6 +519,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineRun> {
   if (input.project_id !== undefined && input.project_id !== null) {
     payload.project_id = input.project_id;
   }
+  if (input.execution_consent !== undefined) {
+    payload.execution_consent = input.execution_consent;
+  }
   return normalizePipelineRun(await invokeCommand<unknown>('run_pipeline', {
     input: payload,
   }));
@@ -520,6 +541,94 @@ export async function abortPipeline(runId: string): Promise<boolean> {
 
 export async function cancelPipeline(runId: string): Promise<boolean> {
   return invokeCommand<boolean>('cancel_pipeline', { run_id: runId });
+}
+
+/** One reconciler's outcome inside a workspace reconciliation report. */
+export type ReconciliationResult = {
+  reconciler: string;
+  modified: boolean;
+  summary: string;
+  duration_ms: number;
+  error?: string | null;
+};
+
+/** Report of the reconcile_workspace IPC command. */
+export type ReconciliationReport = {
+  results: ReconciliationResult[];
+  modified_count: number;
+  summary: string;
+};
+
+export async function reconcileWorkspace(projectId: string): Promise<ReconciliationReport> {
+  const response = await invokeCommand<unknown>('reconcile_workspace', { project_id: projectId });
+  if (!isRecord(response)) throw new Error('Invalid reconciliation report response');
+  const results = Array.isArray(response.results) ? response.results : [];
+  return {
+    results: results.map((item) => {
+      if (!isRecord(item)) throw new Error('Invalid reconciliation result');
+      return {
+        reconciler: typeof item.reconciler === 'string' ? item.reconciler : '',
+        modified: item.modified === true,
+        summary: typeof item.summary === 'string' ? item.summary : '',
+        duration_ms: typeof item.duration_ms === 'number' ? item.duration_ms : 0,
+        error: typeof item.error === 'string' ? item.error : null,
+      };
+    }),
+    modified_count: typeof response.modified_count === 'number' ? response.modified_count : 0,
+    summary: typeof response.summary === 'string' ? response.summary : '',
+  };
+}
+
+/** Result of the consented install_dependencies IPC command. */
+export type InstallResult = {
+  note: string;
+};
+
+export async function installDependencies(
+  projectId: string,
+  consent: ExecutionConsent,
+): Promise<InstallResult> {
+  const response = await invokeCommand<unknown>('install_dependencies', {
+    project_id: projectId,
+    consent,
+  });
+  if (!isRecord(response)) throw new Error('Invalid install result response');
+  return { note: typeof response.note === 'string' ? response.note : '' };
+}
+
+/** Per-gate result inside a build-verification report. */
+export type BuildVerificationGate = {
+  passed: boolean;
+  degraded: boolean;
+  gate: string;
+  detail: string;
+};
+
+/** Report of the verify_build IPC command. */
+export type BuildVerificationReport = {
+  results: BuildVerificationGate[];
+  summary: string;
+};
+
+export async function verifyBuild(projectId: string, consent: ExecutionConsent): Promise<BuildVerificationReport> {
+  const response = await invokeCommand<unknown>('verify_build', {
+    project_id: projectId,
+    consent,
+  });
+  if (!isRecord(response)) throw new Error('Invalid build verification response');
+  const results = Array.isArray(response.results) ? response.results : [];
+  return {
+    results: results.map((item) => {
+      if (!isRecord(item)) throw new Error('Invalid verification result');
+      return {
+        passed: item.passed === true,
+        degraded: item.degraded === true,
+        gate: typeof item.gate === 'string' ? item.gate : '',
+        detail: typeof item.detail === 'string' ? item.detail : '',
+      };
+    }),
+    summary: typeof response.summary === 'string' ? response.summary : '',
+  };
 }
 
 export async function getPipelineStatus(runId: string): Promise<PipelineStatusResponse> {
