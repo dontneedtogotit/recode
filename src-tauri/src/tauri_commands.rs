@@ -812,9 +812,22 @@ pub fn delete_provider(id: String) -> Result<(), String> {
 // (stored credential or env) and only redacted hints are returned.
 // ---------------------------------------------------------------------------
 
-fn credentials_db_path() -> String {
+pub fn credentials_db_path() -> String {
     // Same file the global app state opens (mirrors save_provider semantics).
     "recode.db".to_string()
+}
+
+/// Persist the in-memory model catalog back to disk so edits and discoveries
+/// survive an app restart. Best-effort: a failed write is logged, not surfaced
+/// to the caller, because the in-memory catalog is already authoritative for
+/// the running session.
+fn persist_model_catalog() {
+    let state = AppState::global();
+    let catalog = state.model_catalog();
+    let conn = state.db();
+    if let Err(e) = catalog.save(&conn) {
+        eprintln!("[recode] failed to persist model catalog: {e}");
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -898,6 +911,7 @@ pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::Mod
         discovered: false,
     };
     AppState::global().model_catalog().upsert(model.clone());
+    persist_model_catalog();
     Ok(model)
 }
 
@@ -905,6 +919,7 @@ pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::Mod
 pub fn remove_model(id: String) -> Result<bool, String> {
     let removed = AppState::global().model_catalog().get(&id).is_some();
     AppState::global().model_catalog().remove(&id);
+    persist_model_catalog();
     Ok(removed)
 }
 
@@ -931,6 +946,7 @@ pub fn import_env_api_key(provider: String) -> Result<crate::provider_credential
         return Err(format!("{} is set but empty", ep.env_var));
     }
     crate::provider_credentials::save_api_key(&db, &provider, &key).map_err(|e| e.to_string())?;
+    crate::gateway::refresh_gateway();
     Ok(crate::provider_credentials::list_infos(&db)
         .remove(&provider)
         .ok_or_else(|| "imported credential not found after save".to_string())?)
@@ -952,12 +968,35 @@ pub fn save_provider_config(
         &provider,
         base_url.as_deref(),
         default_model.as_deref(),
-    )
+    )?;
+    crate::gateway::refresh_gateway();
+    Ok(())
+}
+
+/// Store (or overwrite) a provider's API key that the user typed into the GUI.
+/// Mirrors `import_env_api_key`, but takes the key as an argument instead of
+/// reading it from the process environment. The key is written to the local
+/// credential store only; only a redacted `ProviderCredentialInfo` (hint +
+/// has-key flag) crosses IPC back to the UI.
+#[tauri::command]
+pub fn save_provider_api_key(provider: String, api_key: String) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err("provider must not be empty".into());
+    }
+    let db = credentials_db_path();
+    crate::provider_credentials::save_api_key(&db, provider, &api_key).map_err(|e| e.to_string())?;
+    crate::gateway::refresh_gateway();
+    Ok(crate::provider_credentials::list_infos(&db)
+        .remove(provider)
+        .ok_or_else(|| "stored credential not found after save".to_string())?)
 }
 
 #[tauri::command]
 pub fn delete_provider_api_key(provider: String) -> Result<bool, String> {
-    crate::provider_credentials::delete_api_key(&credentials_db_path(), &provider)
+    let deleted = crate::provider_credentials::delete_api_key(&credentials_db_path(), &provider)?;
+    crate::gateway::refresh_gateway();
+    Ok(deleted)
 }
 
 #[derive(Debug, serde::Deserialize)]

@@ -172,6 +172,27 @@ pub fn load_config(path: &str, provider: &str) -> Option<(Option<String>, Option
     .ok()
 }
 
+/// The provider whose stored key was saved most recently (ties broken by name
+/// for determinism). The gateway uses this to pick which credential to build
+/// an adapter from when the user has added a key through the GUI. Returns
+/// `None` when no provider has a stored key.
+pub fn latest_keyed_provider(path: &str) -> Option<String> {
+    let conn = match rusqlite::Connection::open(path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    if let Err(_) = ensure_schema(&conn) {
+        return None;
+    }
+    conn.query_row(
+        "SELECT provider, api_key, updated_at FROM provider_credentials
+         ORDER BY updated_at DESC, provider ASC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// Redacted credential/config records for every provider that has either a key
 /// or config. Safe for IPC.
 pub fn list_infos(path: &str) -> HashMap<String, ProviderCredentialInfo> {

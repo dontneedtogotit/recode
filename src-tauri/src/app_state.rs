@@ -40,11 +40,16 @@ pub struct AppState {
 impl AppState {
     pub fn open(path: &Path) -> Result<Self, DomainError> {
         let connection = Mutex::new(open_recode_db(path)?);
+        let model_catalog = ModelCatalog::with_builtins();
+        {
+            let conn = connection.lock().expect("lock db connection");
+            ModelCatalog::load(&model_catalog, &conn)?;
+        }
         let state = Self {
             connection,
             monitor: crate::runtime_monitor::service(),
             progress_tracker: ProgressTracker::new(),
-            model_catalog: ModelCatalog::with_builtins(),
+            model_catalog,
         };
         {
             let conn = state.db();

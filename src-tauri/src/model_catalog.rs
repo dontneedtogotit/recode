@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{RwLock, RwLockReadGuard};
+use crate::domain::DomainError;
 
 /// Modalities a model accepts in its prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +290,44 @@ impl ModelCatalog {
     pub fn read(&self) -> RwLockReadGuard<'_, HashMap<String, ModelInfo>> {
         self.models.read().unwrap()
     }
+
+    /// Persist the entire catalog (built-in + discovered + user-edited models)
+    /// as a single JSON row so it survives a restart. Call after any mutation
+    /// that outlives the process (upsert / remove / discovery). The DB is
+    /// opened via a separate connection by the caller, so this is safe to run
+    /// while `AppState` holds its own connection.
+    pub fn save(&self, conn: &rusqlite::Connection) -> Result<(), DomainError> {
+        let json = serde_json::to_string(&self.all())
+            .map_err(|e| DomainError::internal(format!("serialize model catalog failed: {e}")))?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS model_catalog (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)")
+            .map_err(|e| DomainError::internal(format!("model catalog schema creation failed: {e}")))?;
+        conn.execute(
+            "INSERT INTO model_catalog (id, json) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+            rusqlite::params![json],
+        )
+        .map_err(|e| DomainError::internal(format!("model catalog persist failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Restore a previously persisted catalog into `self`, layering saved
+    /// entries over the built-ins. No-op when no row exists (fresh install) or
+    /// the stored payload is corrupt.
+    pub fn load(&self, conn: &rusqlite::Connection) -> Result<usize, DomainError> {
+        let row: Option<String> = conn
+            .query_row("SELECT json FROM model_catalog WHERE id = 1", [], |row| row.get(0))
+            .ok();
+        let Some(json) = row else {
+            return Ok(0);
+        };
+        let saved: Vec<ModelInfo> = serde_json::from_str(&json)
+            .map_err(|e| DomainError::internal(format!("deserialize model catalog failed: {e}")))?;
+        let mut n = 0;
+        for model in saved {
+            self.upsert(model);
+            n += 1;
+        }
+        Ok(n)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,28 +378,295 @@ fn model(
     }
 }
 
-/// Conservative default for a model we know the id of but have no metadata for.
+/// Inferred capabilities for a discovered model, keyed off its id. This is
+/// what makes each auto-discovered model carry *individual* metadata rather
+/// than one shared stub: the id is pattern-matched against known families to
+/// pick a realistic context window, output cap, and capability flags.
+struct Inferred {
+    family: &'static str,
+    context_window: u32,
+    max_output: u32,
+    vision: bool,
+    reasoning: bool,
+    tools: bool,
+    structured: bool,
+    cost: CostTier,
+    /// One-line capability summary folded into the model's description.
+    summary: &'static str,
+    strengths: &'static [&'static str],
+    affinity: &'static [(&'static str, f32)],
+}
+
+/// Pattern-match a model id (with its provider as a tie-breaker) to the most
+/// specific known family. Order matters: specific prefixes first, generic
+/// substrings later, unknown ids fall through to a conservative default.
+fn infer_family(provider: &str, model_id: &str) -> Inferred {
+    let m = model_id.to_lowercase();
+    let p = provider.to_lowercase();
+
+    // --- OpenAI: reasoning (o-series) ---
+    if p == "openai" && (m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.contains("-o1") || m.contains("-o3")) {
+        return Inferred {
+            family: "gpt-o",
+            context_window: 128_000,
+            max_output: 32_000,
+            vision: true,
+            reasoning: true,
+            tools: true,
+            structured: true,
+            cost: CostTier::High,
+            summary: "a long-chain reasoning model that thinks step-by-step before answering",
+            strengths: &["Deep reasoning", "Complex planning", "Strong coding", "Vision"],
+            affinity: &[( "reasoning", 0.95), ("coding", 0.9), ("planning", 0.9), ("debugging", 0.9), ("review", 0.85), ("other", 0.7)],
+        };
+    }
+    // --- OpenAI: GPT-4o / GPT-4.1 / GPT-4 family ---
+    if p == "openai"
+        && (m.contains("gpt-4o") || m.contains("gpt-4.1") || m.contains("gpt-4") || m.contains("gpt-3.5"))
+    {
+        let mini = m.contains("mini") || m.contains("nano");
+        return Inferred {
+            family: "gpt",
+            context_window: 128_000,
+            max_output: if mini { 16_384 } else { 16_384 },
+            vision: !m.contains("gpt-3.5"),
+            reasoning: false,
+            tools: true,
+            structured: true,
+            cost: if mini { CostTier::Low } else { CostTier::High },
+            summary: if mini {
+                "a fast, low-cost generalist for high-volume text, chat, and simple tool calls"
+            } else {
+                "a general-purpose flagship with strong reasoning, coding, and vision"
+            },
+            strengths: &["Versatile", "Strong coding", "Multimodal", "Reliable tool use"],
+            affinity: &[("coding", 0.9), ("reasoning", 0.85), ("planning", 0.8), ("review", 0.85), ("generation", 0.85), ("documentation", 0.85), ("other", 0.85)],
+        };
+    }
+    // --- Anthropic: Claude ---
+    if p == "anthropic" || m.contains("claude") {
+        let opus = m.contains("opus");
+        let haiku = m.contains("haiku");
+        let vision = !haiku; // haiku historically text-only
+        return Inferred {
+            family: "claude",
+            context_window: 200_000,
+            max_output: 8_192,
+            vision,
+            reasoning: opus,
+            tools: true,
+            structured: true,
+            cost: if opus { CostTier::High } else if haiku { CostTier::Low } else { CostTier::Medium },
+            summary: if opus {
+                "a top-tier reasoning model built for hard, long-context analysis and code"
+            } else if haiku {
+                "a fast, inexpensive text model for lightweight chat and extraction"
+            } else {
+                "a balanced long-context model strong at writing, summarization, and code"
+            },
+            strengths: if opus {
+                &["Top reasoning", "200K context", "Strong code", "Careful tool use"]
+            } else {
+                &["Long context", "Strong writing", "Good code", "Reliable tool use"]
+            },
+            affinity: &[("reasoning", 0.9), ("coding", 0.85), ("documentation", 0.9), ("review", 0.85), ("planning", 0.8), ("generation", 0.85), ("other", 0.85)],
+        };
+    }
+    // --- Google: Gemini ---
+    if m.contains("gemini") || p == "google" {
+        let flash = m.contains("flash");
+        let lite = m.contains("lite");
+        let pro = m.contains("pro") || (!flash && !lite);
+        return Inferred {
+            family: "gemini",
+            context_window: if pro { 1_000_000 } else { 1_000_000 },
+            max_output: if pro { 8_192 } else { 8_192 },
+            vision: true,
+            reasoning: pro,
+            tools: true,
+            structured: true,
+            cost: if lite { CostTier::Low } else if flash { CostTier::Low } else { CostTier::High },
+            summary: if flash || lite {
+                "a fast, cheap multimodal model tuned for high-throughput text and vision"
+            } else {
+                "a large-context multimodal model for long documents, code, and reasoning"
+            },
+            strengths: &["1M context", "Multimodal", "Strong reasoning", "Good code"],
+            affinity: &[("reasoning", 0.85), ("coding", 0.8), ("planning", 0.8), ("review", 0.8), ("documentation", 0.85), ("generation", 0.85), ("other", 0.85)],
+        };
+    }
+    // --- Meta: Llama ---
+    if m.contains("llama") {
+        let vision = m.contains("11") || m.contains("11b") || m.contains("113b") || m.contains("-v") || m.contains("vision");
+        let big = m.contains("405b") || m.contains("70b") || m.contains("3.3");
+        return Inferred {
+            family: "llama",
+            context_window: if big { 128_000 } else { 8_192 },
+            max_output: 4_096,
+            vision,
+            reasoning: false,
+            tools: true,
+            structured: false,
+            cost: if big { CostTier::Medium } else { CostTier::Low },
+            summary: "an open-weight general model for chat, generation, and fine-tuning",
+            strengths: &["Open weights", "Fast", "Strong base reasoning", "Fine-tunable"],
+            affinity: &[("generation", 0.85), ("coding", 0.7), ("reasoning", 0.7), ("documentation", 0.8), ("other", 0.8)],
+        };
+    }
+    // --- DeepSeek: r1 (reasoning) vs chat/v3 ---
+    if p == "deepseek" || m.contains("deepseek") {
+        let r1 = m.contains("r1");
+        let strengths: &'static [&'static str] = if r1 {
+            &["Very low cost", "Strong coding", "Long context", "Reasoning"]
+        } else {
+            &["Very low cost", "Strong coding", "Long context", "Fast"]
+        };
+        let affinity: &'static [(&'static str, f32)] = if r1 {
+            &[
+                ("coding", 0.9),
+                ("reasoning", 0.95),
+                ("planning", 0.8),
+                ("review", 0.8),
+                ("other", 0.8),
+            ]
+        } else {
+            &[
+                ("coding", 0.9),
+                ("reasoning", 0.8),
+                ("planning", 0.8),
+                ("review", 0.8),
+                ("other", 0.8),
+            ]
+        };
+        return Inferred {
+            family: "deepseek",
+            context_window: 64_000,
+            max_output: 8_192,
+            vision: false,
+            reasoning: r1,
+            tools: true,
+            structured: false,
+            cost: CostTier::Low,
+            summary: if r1 {
+                "a low-cost reasoning model that deliberates before answering, strong in math and code"
+            } else {
+                "a low-cost general model for chat, code, and long-document summarization"
+            },
+            strengths,
+            affinity,
+        };
+    }
+    // --- Mistral: codestral / mixtral / mistral ---
+    if m.contains("codestral") {
+        return Inferred {
+            family: "mistral",
+            context_window: 32_000,
+            max_output: 8_192,
+            vision: false,
+            reasoning: false,
+            tools: true,
+            structured: false,
+            cost: CostTier::Medium,
+            summary: "a code-specialized model tuned for repository-level coding and completion",
+            strengths: &["Code-specialized", "Agentic coding", "Good completion", "Reliable tool use"],
+            affinity: &[("coding", 0.95), ("refactoring", 0.9), ("review", 0.9), ("debugging", 0.85), ("other", 0.7)],
+        };
+    }
+    if p == "mistral" || m.contains("mistral") || m.contains("mixtral") {
+        return Inferred {
+            family: "mistral",
+            context_window: 32_000,
+            max_output: 8_192,
+            vision: false,
+            reasoning: false,
+            tools: true,
+            structured: false,
+            cost: CostTier::Medium,
+            summary: "a fast, efficient general model for chat and generation",
+            strengths: &["Fast", "Efficient", "Good generation", "Reliable tool use"],
+            affinity: &[("generation", 0.85), ("reasoning", 0.75), ("coding", 0.7), ("documentation", 0.8), ("other", 0.8)],
+        };
+    }
+    // --- xAI: Grok ---
+    if p == "xai" || p == "grok" || m.contains("grok") {
+        return Inferred {
+            family: "grok",
+            context_window: 128_000,
+            max_output: 8_192,
+            vision: true,
+            reasoning: m.contains("grok-3") || m.contains("grok-4"),
+            tools: true,
+            structured: true,
+            cost: CostTier::High,
+            summary: "a large multimodal generalist with strong reasoning and code",
+            strengths: &["Multimodal", "Strong reasoning", "Strong code", "Long context"],
+            affinity: &[("reasoning", 0.85), ("coding", 0.85), ("planning", 0.8), ("review", 0.8), ("other", 0.85)],
+        };
+    }
+    // --- Alibaba: Qwen ---
+    if m.contains("qwen") {
+        let vision = m.contains("-v") || m.contains("vl") || m.contains("vision");
+        return Inferred {
+            family: "qwen",
+            context_window: 32_000,
+            max_output: 8_192,
+            vision,
+            reasoning: m.contains("qwq") || m.contains("-r1"),
+            tools: true,
+            structured: false,
+            cost: CostTier::Low,
+            summary: "a multilingual general model strong at code, reasoning, and long text",
+            strengths: &["Multilingual", "Strong code", "Low cost", "Good reasoning"],
+            affinity: &[("coding", 0.85), ("reasoning", 0.8), ("generation", 0.8), ("documentation", 0.8), ("other", 0.8)],
+        };
+    }
+    // --- Conservative fallback: we saw the id but recognize no family. ---
+    Inferred {
+        family: "unknown",
+        context_window: 8_192,
+        max_output: 4_096,
+        vision: false,
+        reasoning: false,
+        tools: true,
+        structured: false,
+        cost: CostTier::Medium,
+        summary: "an auto-discovered model of unknown lineage; assume modest context and text-only input",
+        strengths: &["Auto-discovered"],
+        affinity: &[("coding", 0.5), ("reasoning", 0.5), ("other", 0.6)],
+    }
+}
+
+/// Derive rich per-model metadata for a model we know the id of but have no
+/// explicit catalog entry for. Instead of one flat default, this inspects the
+/// model id (and provider) to infer a family, then fills in a realistic
+/// context window, output cap, and capability flags plus a tailored
+/// description and strengths — so each discovered model gets individual,
+/// useful metadata rather than a generic stub.
 pub fn discovered_default(provider: &str, model_id: &str) -> ModelInfo {
+    let inferred = infer_family(provider, model_id);
+    let mut modalities = vec![Modality::Text];
+    if inferred.vision {
+        modalities.push(Modality::Image);
+    }
     ModelInfo {
         id: format!("{}/{}", provider, model_id),
         provider: provider.to_string(),
         model_id: model_id.to_string(),
         name: model_id.to_string(),
-        family: "unknown".to_string(),
-        context_window: 8192,
-        max_output_tokens: 4096,
-        input_modalities: vec![Modality::Text],
-        supports_tools: true,
-        supports_structured_output: false,
-        supports_reasoning: false,
-        cost_tier: CostTier::Medium,
-        description: format!("Discovered model '{}' from {}.", model_id, provider),
-        strengths: vec!["Auto-discovered".to_string()],
-        task_affinity: affinity(&[
-            ("coding", 0.5),
-            ("reasoning", 0.5),
-            ("other", 0.6),
-        ]),
+        family: inferred.family.to_string(),
+        context_window: inferred.context_window,
+        max_output_tokens: inferred.max_output,
+        input_modalities: modalities,
+        supports_tools: inferred.tools,
+        supports_structured_output: inferred.structured,
+        supports_reasoning: inferred.reasoning,
+        cost_tier: inferred.cost,
+        description: format!(
+            "Auto-discovered {} model '{}' from {} — {}.",
+            inferred.family, model_id, provider, inferred.summary
+        ),
+        strengths: inferred.strengths.iter().map(|s| s.to_string()).collect(),
+        task_affinity: affinity(inferred.affinity),
         prompt_price_per_mtok: None,
         completion_price_per_mtok: None,
         discovered: true,

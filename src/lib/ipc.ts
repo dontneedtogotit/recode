@@ -979,6 +979,16 @@ export async function saveProviderConfig(
   await invokeCommand<void>('save_provider_config', { provider, baseUrl, defaultModel });
 }
 
+export async function saveProviderApiKey(
+  provider: string,
+  apiKey: string,
+): Promise<ProviderCredentialInfo> {
+  return invokeCommand<ProviderCredentialInfo>('save_provider_api_key', {
+    provider,
+    apiKey,
+  });
+}
+
 export async function deleteProviderApiKey(provider: string): Promise<boolean> {
   return invokeCommand<boolean>('delete_provider_api_key', { provider });
 }

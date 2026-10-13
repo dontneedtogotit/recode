@@ -13,6 +13,7 @@ import {
   listProviderCredentials,
   removeModel,
   routeModels,
+  saveProviderApiKey,
   runOrchestratorStep,
   runOrchestratorAutonomous,
   upsertModel,
@@ -147,6 +148,32 @@ export function ModelsPanel() {
   const deleteKey = (provider: string) => {
     if (!window.confirm(`Remove the stored API key for ${provider}?`)) return;
     void runProviderAction(provider, () => deleteProviderApiKey(provider), `API key removed for ${provider}.`);
+  };
+
+  // Paste a key directly from the GUI into the local credential store.
+  const [keyEntry, setKeyEntry] = useState<Record<string, string>>({});
+  const [keyEntryOpen, setKeyEntryOpen] = useState<string | null>(null);
+  const addKey = (provider: string) => {
+    const raw = keyEntry[provider]?.trim();
+    if (!raw) {
+      setError(`Enter an API key for ${provider} first.`);
+      return;
+    }
+    void runProviderAction(
+      provider,
+      async () => {
+        const info = await saveProviderApiKey(provider, raw);
+        setKeyEntry((prev) => {
+          const next = { ...prev };
+          delete next[provider];
+          return next;
+        });
+        if (!info.baseUrl) {
+          setNotice(`Key stored for ${provider}. Set a base URL (or leave it — known providers use a built-in default) before discovering.`);
+        }
+      },
+      `API key stored locally for ${provider}.`,
+    );
   };
 
   const openAddForm = () => {
@@ -325,17 +352,44 @@ export function ModelsPanel() {
             const busy = busyProvider === provider;
             return (
               <div key={provider} className="provider-row">
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="section-header-title">{provider}</div>
                   <div className="text-sm text-muted">
                     {cred?.hasApiKey ? `key ${cred.keyHint ?? ''}` : 'no key stored'}
                     {cred?.baseUrl ? ` · ${cred.baseUrl}` : ''}
                     {cred?.defaultModel ? ` · default ${cred.defaultModel}` : ''}
                   </div>
+                  {keyEntryOpen === provider && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                      <input
+                        type="password"
+                        autoFocus
+                        style={{ flex: 1 }}
+                        placeholder={`API key for ${provider}`}
+                        value={keyEntry[provider] ?? ''}
+                        onChange={(e) =>
+                          setKeyEntry((prev) => ({ ...prev, [provider]: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') addKey(provider);
+                          if (e.key === 'Escape') setKeyEntryOpen(null);
+                        }}
+                      />
+                      <button type="button" disabled={busy} onClick={() => addKey(provider)}>
+                        {busy ? 'Saving…' : 'Save key'}
+                      </button>
+                      <button type="button" className="ghost" disabled={busy} onClick={() => setKeyEntryOpen(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="row">
                   <button type="button" className="ghost" disabled={busy || Boolean(cred?.hasApiKey)} onClick={() => importKey(provider)}>
                     Import env key
+                  </button>
+                  <button type="button" className="ghost" disabled={busy || Boolean(cred?.hasApiKey)} onClick={() => setKeyEntryOpen(keyEntryOpen === provider ? null : provider)}>
+                    {cred?.hasApiKey ? 'Replace key' : 'Add key'}
                   </button>
                   <button type="button" className="ghost" disabled={busy || !cred?.hasApiKey} onClick={() => deleteKey(provider)}>
                     Remove key

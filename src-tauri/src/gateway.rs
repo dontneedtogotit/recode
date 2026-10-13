@@ -463,37 +463,115 @@ impl<A: ProviderAdapter> DefaultGatewayService<A> {
     }
 }
 
-static DEFAULT_GATEWAY: std::sync::OnceLock<std::sync::Arc<dyn GatewayService>> = std::sync::OnceLock::new();
+/// Adapter returned when no provider can be built from env or stored
+/// credentials. It reports `is_configured() == false` and rejects every send
+/// rather than fabricating a result.
+struct StubAdapter;
 
-pub fn default_gateway() -> std::sync::Arc<dyn GatewayService> {
-    DEFAULT_GATEWAY
-        .get_or_init(|| {
-            if let Ok(adapter) = OpenAICompatibleAdapter::from_env() {
-                return std::sync::Arc::new(DefaultGatewayService::new(
-                    std::sync::Arc::new(adapter),
-                    CircuitBreakerConfig::default(),
-                ));
-            }
-            struct StubAdapter;
-            impl ProviderAdapter for StubAdapter {
-                fn capabilities(&self) -> ProviderCapabilities {
-                    ProviderCapabilities {
-                        id: "stub".into(),
-                        supports_streaming: false,
-                        supports_tools: false,
-                        preferred_task_types: vec![],
-                    }
-                }
+impl ProviderAdapter for StubAdapter {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            id: "stub".into(),
+            supports_streaming: false,
+            supports_tools: false,
+            preferred_task_types: vec![],
+        }
+    }
 
-                fn send(&self, _request: GatewayRequest) -> Result<GatewayResponse, DomainError> {
-                    Err(DomainError::unavailable("no real provider configured"))
-                }
-            }
+    fn send(&self, _request: GatewayRequest) -> Result<GatewayResponse, DomainError> {
+        Err(DomainError::unavailable("no real provider configured"))
+    }
+}
 
-            std::sync::Arc::new(DefaultGatewayService::new(
-                std::sync::Arc::new(StubAdapter),
-                CircuitBreakerConfig::default(),
-            ))
-        })
-        .clone()
+/// Fallback endpoints for well-known providers, used when the user has saved a
+/// key but not an explicit base URL. Unknown providers return `None` (the
+/// caller then requires an explicit base URL). All are HTTPS, so the adapter's
+/// transport policy accepts them.
+fn default_endpoint(provider: &str) -> Option<&'static str> {
+    match provider.to_lowercase().as_str() {
+        "openai" => Some("https://api.openai.com/v1"),
+        "anthropic" => Some("https://api.anthropic.com/v1"),
+        "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+        "xai" | "grok" => Some("https://api.x.ai/v1"),
+        "deepseek" => Some("https://api.deepseek.com/v1"),
+        "mistral" => Some("https://api.mistral.ai/v1"),
+        "alibaba" | "qwen" | "dashscope" => {
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1")
+        }
+        "groq" => Some("https://api.groq.com/openai/v1"),
+        "together" => Some("https://api.together.xyz/v1"),
+        _ => None,
+    }
+}
+
+/// Build an adapter from the most recently saved GUI credential. Requires a
+/// stored key plus a resolvable base URL and model (either stored or a
+/// well-known default). Returns `Err` when any of those is missing, which the
+/// caller treats as "no usable stored provider".
+fn resolve_stored_adapter() -> Result<OpenAICompatibleAdapter, DomainError> {
+    let path = crate::tauri_commands::credentials_db_path();
+    if !std::path::Path::new(&path).exists() {
+        return Err(DomainError::unavailable("no stored provider credentials"));
+    }
+    let provider = crate::provider_credentials::latest_keyed_provider(&path)
+        .ok_or_else(|| DomainError::unavailable("no provider key stored"))?;
+    let key = crate::provider_credentials::load_api_key(&path, &provider)
+        .ok_or_else(|| DomainError::unavailable("stored key missing"))?;
+    let (base, model) = crate::provider_credentials::load_config(&path, &provider)
+        .unwrap_or((None, None));
+    let base = base
+        .filter(|b| !b.trim().is_empty())
+        .or_else(|| default_endpoint(&provider).map(|s| s.to_string()))
+        .ok_or_else(|| DomainError::unavailable("provider base url not configured"))?;
+    let model = model
+        .filter(|m| !m.trim().is_empty())
+        .ok_or_else(|| DomainError::unavailable("provider default model not configured"))?;
+    OpenAICompatibleAdapter::new(&base, &model, Some(key))
+}
+
+/// Build the best available gateway: env-configured adapter first, then the
+/// most recently saved GUI credential, else a stub.
+fn build_gateway() -> Arc<dyn GatewayService> {
+    if let Ok(adapter) = OpenAICompatibleAdapter::from_env() {
+        return Arc::new(DefaultGatewayService::new(
+            Arc::new(adapter),
+            CircuitBreakerConfig::default(),
+        ));
+    }
+    if let Ok(adapter) = resolve_stored_adapter() {
+        return Arc::new(DefaultGatewayService::new(
+            Arc::new(adapter),
+            CircuitBreakerConfig::default(),
+        ));
+    }
+    Arc::new(DefaultGatewayService::new(
+        Arc::new(StubAdapter),
+        CircuitBreakerConfig::default(),
+    ))
+}
+
+static DEFAULT_GATEWAY: std::sync::RwLock<Option<Arc<dyn GatewayService>>> =
+    std::sync::RwLock::new(None);
+
+pub fn default_gateway() -> Arc<dyn GatewayService> {
+    {
+        let guard = DEFAULT_GATEWAY.read().expect("gateway lock poisoned");
+        if let Some(gw) = guard.as_ref() {
+            return gw.clone();
+        }
+    }
+    let built = build_gateway();
+    let mut guard = DEFAULT_GATEWAY.write().expect("gateway lock poisoned");
+    // Another thread may have built one while we waited on the write lock.
+    guard.get_or_insert_with(|| built);
+    guard.as_ref().unwrap().clone()
+}
+
+/// Rebuild the shared gateway from current env/credentials. Called after a key
+/// or provider config is saved through the GUI so the new credential takes
+/// effect without restarting the app.
+pub fn refresh_gateway() {
+    let built = build_gateway();
+    let mut guard = DEFAULT_GATEWAY.write().expect("gateway lock poisoned");
+    *guard = Some(built);
 }

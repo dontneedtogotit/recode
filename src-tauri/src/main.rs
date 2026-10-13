@@ -70,6 +70,7 @@ fn main() {
             recode::tauri_commands::import_env_api_key,
             recode::tauri_commands::list_provider_credentials,
             recode::tauri_commands::save_provider_config,
+            recode::tauri_commands::save_provider_api_key,
             recode::tauri_commands::delete_provider_api_key,
             recode::tauri_commands::route_models,
             recode::tauri_commands::infer_routing_request,

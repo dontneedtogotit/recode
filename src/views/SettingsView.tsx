@@ -243,7 +243,7 @@ export default function SettingsView({ runState: _runState, onRunAgentTask: _onR
       {settingsSection === 'providers' && (
         <Card className="settings-panel">
           <SectionHeader title="Providers" description="Legacy metadata only; these entries do not configure the live gateway." />
-          <div className="settings-inline-note text-xs text-muted">The gateway reads RECODE_OPENAI_BASE_URL and RECODE_OPENAI_MODEL from the app process environment at startup. Set RECODE_OPENAI_API_KEY there for remote HTTPS providers. API keys can no longer be saved to SQLite; existing legacy records require an explicit secret migration.</div>
+          <div className="settings-inline-note text-xs text-muted">The gateway reads a provider key from the process environment (RECODE_OPENAI_API_KEY) or from the local credential store — add keys in the Models tab. Keys saved through the GUI persist across restarts and take effect immediately.</div>
           <div className="provider-list">
             {providers.length === 0 && (
               <EmptyState title="No legacy provider metadata" description="Configure the gateway using the app process environment before launching recode." />
