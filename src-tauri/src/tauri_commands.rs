@@ -1,30 +1,37 @@
 use crate::app_state::AppState;
 
+use crate::agent_runtime::LocalAgentRuntime;
 use crate::dev_server::{
     DevServerStatus, DevServerStatusReport, DevServerStatusReporter, LocalDevServerStatusReporter,
 };
-use crate::git::{GitCommitOutput, GitInitOutput, GitService, GitStatus, LocalGitService};
 use crate::gateway::{DefaultGatewayService, GatewayRequest, GatewayResponse, GatewayService};
-use crate::provider_settings::{ProviderSettings, ProviderSettingsRepository, SqliteProviderSettingsRepository};
+use crate::git::{GitCommitOutput, GitInitOutput, GitService, GitStatus, LocalGitService};
+use crate::persistence::{AgentTaskRunRecord, PlanRecord};
 use crate::pipeline::{LocalPipelineService, PipelineControl, PipelineInput, PipelineRun};
 use crate::pipeline_history::PipelineRunHistoryRecord;
 use crate::planner::{LocalPlanner, Plan, Planner};
-use crate::planning_circuit_breaker::{PhaseStatus, PlanCircuitBreaker, PlanMetrics, PlanRunStatus};
+use crate::planning_circuit_breaker::{
+    PhaseStatus, PlanCircuitBreaker, PlanMetrics, PlanRunStatus,
+};
 use crate::provider_selection::{
     ProviderCapabilities, ProviderHealthStatus, ProviderSelectionConfig, ProviderSelectionEngine,
+};
+use crate::provider_settings::{
+    ProviderSettings, ProviderSettingsRepository, SqliteProviderSettingsRepository,
 };
 use crate::runtime_monitor::{
     AgentTaskMetrics, DefaultRuntimeMonitorService, MonitorEvent, RuntimeMonitorService,
 };
 use crate::self_heal::{DefaultSelfHealService, RepairAction, SelfHealService};
-use crate::workspace::{LocalWorkspaceService, WorkspaceService, ProjectFile, PathValidation, safe_file_target, registered_workspace_root};
+use crate::workspace::{
+    registered_workspace_root, safe_file_target, LocalWorkspaceService, PathValidation,
+    ProjectFile, WorkspaceService,
+};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Instant, SystemTime};
 use tauri::Emitter;
 use tauri::Manager;
-use crate::agent_runtime::LocalAgentRuntime;
-use crate::persistence::{AgentTaskRunRecord, PlanRecord};
 
 static PLAN_CIRCUIT_BREAKER: LazyLock<Mutex<PlanCircuitBreaker>> =
     LazyLock::new(|| Mutex::new(PlanCircuitBreaker::new()));
@@ -81,9 +88,7 @@ pub fn save_agent_task_run(input: SaveAgentTaskRunInput) -> Result<(), String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_agent_task_runs(
-    agent_id: String,
-) -> Result<Vec<AgentTaskRunRecord>, String> {
+pub fn list_agent_task_runs(agent_id: String) -> Result<Vec<AgentTaskRunRecord>, String> {
     AppState::global()
         .task_runs()
         .list_runs(&agent_id)
@@ -212,7 +217,8 @@ pub struct CreateManagedWorkspaceInput {
 }
 
 fn projects_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path().app_data_dir()
+    app.path()
+        .app_data_dir()
         .map(|path| path.join("projects"))
         .map_err(|error| format!("app data directory unavailable: {error}"))
 }
@@ -245,23 +251,30 @@ pub struct TauriWorkspaceInfo {
 #[tauri::command]
 pub fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<TauriWorkspaceInfo>, String> {
     let root = projects_dir(&app)?;
-    if !root.exists() { return Ok(Vec::new()); }
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
     let service = LocalWorkspaceService;
-    let workspaces = service
-        .list_workspaces(&root)
-        .map_err(|e| e.to_string())?;
+    let workspaces = service.list_workspaces(&root).map_err(|e| e.to_string())?;
     workspaces
         .into_iter()
         .map(|w| {
             registered_workspace_root(&root, &w.id)
-                .map(|path| TauriWorkspaceInfo { id: w.id, root: path.to_string_lossy().to_string() })
+                .map(|path| TauriWorkspaceInfo {
+                    id: w.id,
+                    root: path.to_string_lossy().to_string(),
+                })
                 .map_err(|error| error.to_string())
         })
         .collect()
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn write_project_file(app: tauri::AppHandle, workspace_id: String, file: ProjectFile) -> Result<(), String> {
+pub fn write_project_file(
+    app: tauri::AppHandle,
+    workspace_id: String,
+    file: ProjectFile,
+) -> Result<(), String> {
     let service = LocalWorkspaceService;
     service
         .write_project_file(&workspace_for_id(&app, &workspace_id)?, &file)
@@ -269,7 +282,11 @@ pub fn write_project_file(app: tauri::AppHandle, workspace_id: String, file: Pro
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn read_project_file(app: tauri::AppHandle, workspace_id: String, path: String) -> Result<Option<ProjectFile>, String> {
+pub fn read_project_file(
+    app: tauri::AppHandle,
+    workspace_id: String,
+    path: String,
+) -> Result<Option<ProjectFile>, String> {
     let service = LocalWorkspaceService;
     service
         .read_project_file(&workspace_for_id(&app, &workspace_id)?, &path)
@@ -277,7 +294,10 @@ pub fn read_project_file(app: tauri::AppHandle, workspace_id: String, path: Stri
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_project_files(app: tauri::AppHandle, workspace_id: String) -> Result<Vec<ProjectFile>, String> {
+pub fn list_project_files(
+    app: tauri::AppHandle,
+    workspace_id: String,
+) -> Result<Vec<ProjectFile>, String> {
     let service = LocalWorkspaceService;
     service
         .list_project_files(&workspace_for_id(&app, &workspace_id)?)
@@ -285,10 +305,24 @@ pub fn list_project_files(app: tauri::AppHandle, workspace_id: String) -> Result
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn validate_workspace_path(app: tauri::AppHandle, workspace_id: String, path: String) -> Result<PathValidation, String> {
-    match workspace_for_id(&app, &workspace_id).and_then(|root| safe_file_target(&root, &path).map_err(|error| error.to_string())) {
-        Ok(_) => Ok(PathValidation { valid: true, normalized: path, issues: Vec::new() }),
-        Err(error) => Ok(PathValidation { valid: false, normalized: String::new(), issues: vec![error.to_string()] }),
+pub fn validate_workspace_path(
+    app: tauri::AppHandle,
+    workspace_id: String,
+    path: String,
+) -> Result<PathValidation, String> {
+    match workspace_for_id(&app, &workspace_id)
+        .and_then(|root| safe_file_target(&root, &path).map_err(|error| error.to_string()))
+    {
+        Ok(_) => Ok(PathValidation {
+            valid: true,
+            normalized: path,
+            issues: Vec::new(),
+        }),
+        Err(error) => Ok(PathValidation {
+            valid: false,
+            normalized: String::new(),
+            issues: vec![error.to_string()],
+        }),
     }
 }
 
@@ -302,10 +336,16 @@ pub async fn run_pipeline(
     } else {
         input.run_id.clone()
     };
-    if run_id.len() > 128 || !run_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+    if run_id.len() > 128
+        || !run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
         return Err("invalid pipeline run id".into());
     }
-    let workspace_root = input.project_id.as_deref()
+    let workspace_root = input
+        .project_id
+        .as_deref()
         .map(|id| workspace_for_id(&app, id))
         .transpose()?;
     let build_requested = workspace_root.is_some();
@@ -325,57 +365,73 @@ pub async fn run_pipeline(
         if active_runs.contains_key(&run_id) {
             return Err(format!("pipeline run already active: {run_id}"));
         }
-        AppState::global().pipeline_history().record(&PipelineRunHistoryRecord {
-            id: run_id.clone(),
-            goal: goal.clone(),
-            status: "running".into(),
-            step_count: 0,
-            repair_count: 0,
-            success: false,
-            error: None,
-            finished_at: std::time::SystemTime::now(),
-        }).map_err(|error| error.to_string())?;
+        AppState::global()
+            .pipeline_history()
+            .record(&PipelineRunHistoryRecord {
+                id: run_id.clone(),
+                goal: goal.clone(),
+                status: "running".into(),
+                step_count: 0,
+                repair_count: 0,
+                success: false,
+                error: None,
+                finished_at: std::time::SystemTime::now(),
+            })
+            .map_err(|error| error.to_string())?;
         active_runs.insert(run_id.clone(), control.clone());
     }
 
     let plan_revision_id = uuid::Uuid::new_v4().to_string();
-    let _ = AppState::global().plan_revisions().insert(&crate::pipeline::identity::PlanRevision {
-        schema_version: 1,
-        revision_id: plan_revision_id.clone(),
-        plan_id: run_id.clone(),
-        previous_revision: None,
-        created_at_millis: std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or_default(),
-        status: crate::pipeline::identity::RevisionStatus::Draft,
-    });
+    let _ = AppState::global()
+        .plan_revisions()
+        .insert(&crate::pipeline::identity::PlanRevision {
+            schema_version: 1,
+            revision_id: plan_revision_id.clone(),
+            plan_id: run_id.clone(),
+            previous_revision: None,
+            created_at_millis: std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or_default(),
+            status: crate::pipeline::identity::RevisionStatus::Draft,
+        });
     if let Some(workspace_root) = workspace_root.as_ref() {
-        let projects_dir = workspace_root.parent().map(Path::new).unwrap_or_else(|| Path::new("."));
-        let registered_id = registered_workspace_root(projects_dir, input.project_id.as_deref().unwrap_or_default())
-            .ok()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
+        let projects_dir = workspace_root
+            .parent()
+            .map(Path::new)
+            .unwrap_or_else(|| Path::new("."));
+        let registered_id = registered_workspace_root(
+            projects_dir,
+            input.project_id.as_deref().unwrap_or_default(),
+        )
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
         let grant_id = uuid::Uuid::new_v4().to_string();
-        let _ = AppState::global().workspace_grants().insert(&crate::pipeline::identity::WorkspaceGrant {
-            schema_version: 1,
-            grant_id: grant_id.clone(),
-            project_id: registered_id,
-            created_at_millis: std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or_default(),
-        });
-        let _ = AppState::global().run_identities().insert(&crate::pipeline::identity::RunIdentity {
-            schema_version: 1,
-            run_id: run_id.clone(),
-            plan_revision_id: plan_revision_id.clone(),
-            workspace_grant_id: grant_id,
-            created_at_millis: std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or_default(),
-        });
+        let _ = AppState::global().workspace_grants().insert(
+            &crate::pipeline::identity::WorkspaceGrant {
+                schema_version: 1,
+                grant_id: grant_id.clone(),
+                project_id: registered_id,
+                created_at_millis: std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_default(),
+            },
+        );
+        let _ =
+            AppState::global()
+                .run_identities()
+                .insert(&crate::pipeline::identity::RunIdentity {
+                    schema_version: 1,
+                    run_id: run_id.clone(),
+                    plan_revision_id: plan_revision_id.clone(),
+                    workspace_grant_id: grant_id,
+                    created_at_millis: std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or_default(),
+                });
     }
 
     let (event_bus, receiver) = crate::event_bus::EventBus::new();
@@ -383,7 +439,8 @@ pub async fn run_pipeline(
     let event_run_id = run_id.clone();
     let forwarder = std::thread::spawn(move || {
         while let Ok(event) = receiver.recv() {
-            let payload = crate::event_bus::PipelineEvent::from_domain_event(&event, event_run_id.clone());
+            let payload =
+                crate::event_bus::PipelineEvent::from_domain_event(&event, event_run_id.clone());
             let _ = app_for_events.emit("pipeline-event", payload);
         }
     });
@@ -405,51 +462,75 @@ pub async fn run_pipeline(
             Some(root) => service.with_workspace_root(root),
             None => service,
         };
-        service.run_with_control(service_input, control_for_run.as_ref()).map(|mut run| {
-            run.execution_context = Some(execution_context);
-            run
-        })
+        service
+            .run_with_control(service_input, control_for_run.as_ref())
+            .map(|mut run| {
+                run.execution_context = Some(execution_context);
+                run
+            })
     })
     .await;
     let _ = forwarder.join();
     let cancelled = control.is_cancelling();
     let completed_run = match &result {
-        Ok(Ok(run)) if !cancelled && matches!(run.plan.status, crate::planner::PlanStatus::Completed) => Some(run),
+        Ok(Ok(run))
+            if !cancelled && matches!(run.plan.status, crate::planner::PlanStatus::Completed) =>
+        {
+            Some(run)
+        }
         _ => None,
     };
     let serialized_run = completed_run.and_then(|run| serde_json::to_string(run).ok());
-    let stored_result = serialized_run.as_deref().filter(|json| json.len() <= 1_048_576);
-    let build_succeeded = completed_run.is_some_and(|run| pipeline_build_succeeded(
-        build_requested,
-        run.outcome.as_ref().map(|outcome| outcome.success),
-    ));
+    let stored_result = serialized_run
+        .as_deref()
+        .filter(|json| json.len() <= 1_048_576);
+    let build_succeeded = completed_run.is_some_and(|run| {
+        pipeline_build_succeeded(
+            build_requested,
+            run.outcome.as_ref().map(|outcome| outcome.success),
+        )
+    });
     let stored_success = build_succeeded && stored_result.is_some();
     let error = if cancelled {
         Some("pipeline cancelled by user".to_string())
     } else if completed_run.is_some() && stored_result.is_none() {
         Some("pipeline result could not be persisted".into())
     } else if completed_run.is_some() && !build_succeeded {
-        Some(completed_run.and_then(|run| run.outcome.as_ref().map(|outcome| outcome.summary.clone()))
-            .unwrap_or_else(|| "pipeline build outcome unavailable".into()))
+        Some(
+            completed_run
+                .and_then(|run| run.outcome.as_ref().map(|outcome| outcome.summary.clone()))
+                .unwrap_or_else(|| "pipeline build outcome unavailable".into()),
+        )
     } else {
         match &result {
             Ok(Err(error)) => Some(error.to_string()),
             Err(error) => Some(error.to_string()),
-            Ok(Ok(run)) if !matches!(run.plan.status, crate::planner::PlanStatus::Completed) => Some("pipeline plan did not complete".into()),
+            Ok(Ok(run)) if !matches!(run.plan.status, crate::planner::PlanStatus::Completed) => {
+                Some("pipeline plan did not complete".into())
+            }
             _ => None,
         }
     };
     let terminal = PipelineRunHistoryRecord {
         id: run_id.clone(),
         goal,
-        status: if cancelled { "cancelled" } else if stored_success { "completed" } else { "failed" }.into(),
+        status: if cancelled {
+            "cancelled"
+        } else if stored_success {
+            "completed"
+        } else {
+            "failed"
+        }
+        .into(),
         step_count: completed_run.map_or(0, |run| run.plan.steps.len() as u64),
         repair_count: completed_run.map_or(0, |run| run.repair_actions.len() as u64),
         success: stored_success,
         error,
         finished_at: std::time::SystemTime::now(),
     };
-    let persisted = AppState::global().pipeline_history().finish(&terminal, stored_result);
+    let persisted = AppState::global()
+        .pipeline_history()
+        .finish(&terminal, stored_result);
     ACTIVE_RUNS
         .lock()
         .expect("lock active runs")
@@ -510,7 +591,11 @@ pub fn reconcile_workspace(
         .map(|result| format!("{}: {}", result.reconciler, result.summary))
         .collect::<Vec<_>>()
         .join("; ");
-    Ok(ReconciliationReport { results, modified_count, summary })
+    Ok(ReconciliationReport {
+        results,
+        modified_count,
+        summary,
+    })
 }
 
 /// Result of the consented dependency-install command (ROADMAP 1.1, F07).
@@ -740,7 +825,9 @@ pub fn list_team_tasks(team_id: String) -> Result<Vec<crate::agent_team::TeamTas
 }
 
 #[tauri::command]
-pub fn record_agent_task_history(input: crate::agent_task_history::AgentTaskHistoryRecord) -> Result<(), String> {
+pub fn record_agent_task_history(
+    input: crate::agent_task_history::AgentTaskHistoryRecord,
+) -> Result<(), String> {
     AppState::global()
         .agent_task_history()
         .record(&input)
@@ -748,7 +835,9 @@ pub fn record_agent_task_history(input: crate::agent_task_history::AgentTaskHist
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_agent_task_history(agent_id: String) -> Result<Vec<crate::agent_task_history::AgentTaskHistoryRecord>, String> {
+pub fn list_agent_task_history(
+    agent_id: String,
+) -> Result<Vec<crate::agent_task_history::AgentTaskHistoryRecord>, String> {
     AppState::global()
         .agent_task_history()
         .list_by_agent(&agent_id)
@@ -764,7 +853,9 @@ pub fn ensure_learning_schema() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn record_success_pattern(input: crate::app_state::SuccessPatternInput) -> Result<crate::app_state::SuccessPatternOutput, String> {
+pub fn record_success_pattern(
+    input: crate::app_state::SuccessPatternInput,
+) -> Result<crate::app_state::SuccessPatternOutput, String> {
     AppState::global()
         .learning()
         .record_success_pattern(input)
@@ -772,7 +863,9 @@ pub fn record_success_pattern(input: crate::app_state::SuccessPatternInput) -> R
 }
 
 #[tauri::command]
-pub fn record_anti_pattern(input: crate::app_state::AntiPatternInput) -> Result<crate::app_state::AntiPatternOutput, String> {
+pub fn record_anti_pattern(
+    input: crate::app_state::AntiPatternInput,
+) -> Result<crate::app_state::AntiPatternOutput, String> {
     AppState::global()
         .learning()
         .record_anti_pattern(input)
@@ -780,7 +873,10 @@ pub fn record_anti_pattern(input: crate::app_state::AntiPatternInput) -> Result<
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_success_patterns(agent_role: String, task_type: String) -> Result<Vec<crate::learning::LearningPatternRecord>, String> {
+pub fn list_success_patterns(
+    agent_role: String,
+    task_type: String,
+) -> Result<Vec<crate::learning::LearningPatternRecord>, String> {
     AppState::global()
         .learning()
         .list_success_patterns(&agent_role, &task_type)
@@ -799,9 +895,7 @@ pub fn list_anti_patterns(
 }
 
 #[tauri::command]
-pub fn record_pipeline_run(
-    record: PipelineRunHistoryRecord,
-) -> Result<(), String> {
+pub fn record_pipeline_run(record: PipelineRunHistoryRecord) -> Result<(), String> {
     AppState::global()
         .pipeline_history()
         .record(&record)
@@ -809,9 +903,7 @@ pub fn record_pipeline_run(
 }
 
 #[tauri::command]
-pub fn list_pipeline_runs(
-    limit: u64,
-) -> Result<Vec<PipelineRunHistoryRecord>, String> {
+pub fn list_pipeline_runs(limit: u64) -> Result<Vec<PipelineRunHistoryRecord>, String> {
     AppState::global()
         .pipeline_history()
         .list_runs(limit)
@@ -828,7 +920,9 @@ pub fn run_gateway_task(input: GatewayRequest) -> Result<GatewayResponse, String
 #[tauri::command]
 pub fn get_gateway_status() -> Result<String, String> {
     let gateway = crate::gateway::default_gateway();
-    if !gateway.is_configured() { return Ok("Unconfigured".into()); }
+    if !gateway.is_configured() {
+        return Ok("Unconfigured".into());
+    }
     let state = gateway
         .circuit_breaker_state()
         .map(|value| format!("{:?}", value))
@@ -882,12 +976,14 @@ pub fn get_provider_selection_status() -> Result<ProviderSelectionStatusResponse
 
 #[tauri::command]
 pub fn save_provider(provider: ProviderSettings) -> Result<(), String> {
-    SqliteProviderSettingsRepository::save_provider(&AppState::global().db(), &provider).map_err(|e| e.to_string())
+    SqliteProviderSettingsRepository::save_provider(&AppState::global().db(), &provider)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn list_providers() -> Result<Vec<ProviderSettings>, String> {
-    SqliteProviderSettingsRepository::load_providers(&AppState::global().db()).map_err(|e| e.to_string())
+    SqliteProviderSettingsRepository::load_providers(&AppState::global().db())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -960,7 +1056,9 @@ pub struct UpsertModelInput {
 }
 
 #[tauri::command]
-pub fn list_models(provider: Option<String>) -> Result<Vec<crate::model_catalog::ModelInfo>, String> {
+pub fn list_models(
+    provider: Option<String>,
+) -> Result<Vec<crate::model_catalog::ModelInfo>, String> {
     let catalog = AppState::global().model_catalog();
     Ok(match provider {
         Some(p) if !p.is_empty() => catalog.for_provider(&p),
@@ -980,7 +1078,10 @@ pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::Mod
         return Err("provider must not be empty".into());
     }
     let id = format!("{}/{}", provider, model_id);
-    let name = input.name.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| model_id.to_string());
+    let name = input
+        .name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| model_id.to_string());
     let model = ModelInfo {
         id: id.clone(),
         provider: provider.to_string(),
@@ -992,7 +1093,9 @@ pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::Mod
             .unwrap_or_else(|| provider.to_string()),
         context_window: input.context_window.unwrap_or(128_000),
         max_output_tokens: input.max_output_tokens.unwrap_or(8_192),
-        input_modalities: input.input_modalities.unwrap_or_else(|| vec![Modality::Text]),
+        input_modalities: input
+            .input_modalities
+            .unwrap_or_else(|| vec![Modality::Text]),
         supports_tools: input.supports_tools,
         supports_structured_output: input.supports_structured_output,
         supports_reasoning: input.supports_reasoning,
@@ -1018,24 +1121,25 @@ pub fn remove_model(id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn discover_provider_models(provider: String) -> Result<crate::model_discovery::DiscoveryResult, String> {
+pub fn discover_provider_models(
+    provider: String,
+) -> Result<crate::model_discovery::DiscoveryResult, String> {
     let catalog = AppState::global().model_catalog();
     let db = credentials_db_path();
     Ok(crate::model_discovery::discover_provider(
-        &provider,
-        catalog,
-        None,
-        None,
-        &db,
+        &provider, catalog, None, None, &db,
     ))
 }
 
 #[tauri::command]
-pub fn import_env_api_key(provider: String) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
+pub fn import_env_api_key(
+    provider: String,
+) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
     let db = credentials_db_path();
     let ep = crate::model_discovery::endpoint_for(&provider)
         .ok_or_else(|| format!("no known endpoint for provider '{provider}'"))?;
-    let key = std::env::var(ep.env_var).map_err(|_| format!("{} is not set in the app process environment", ep.env_var))?;
+    let key = std::env::var(ep.env_var)
+        .map_err(|_| format!("{} is not set in the app process environment", ep.env_var))?;
     if key.trim().is_empty() {
         return Err(format!("{} is set but empty", ep.env_var));
     }
@@ -1047,8 +1151,13 @@ pub fn import_env_api_key(provider: String) -> Result<crate::provider_credential
 }
 
 #[tauri::command]
-pub fn list_provider_credentials() -> Result<std::collections::HashMap<String, crate::provider_credentials::ProviderCredentialInfo>, String> {
-    Ok(crate::provider_credentials::list_infos(&credentials_db_path()))
+pub fn list_provider_credentials() -> Result<
+    std::collections::HashMap<String, crate::provider_credentials::ProviderCredentialInfo>,
+    String,
+> {
+    Ok(crate::provider_credentials::list_infos(
+        &credentials_db_path(),
+    ))
 }
 
 #[tauri::command]
@@ -1073,13 +1182,17 @@ pub fn save_provider_config(
 /// credential store only; only a redacted `ProviderCredentialInfo` (hint +
 /// has-key flag) crosses IPC back to the UI.
 #[tauri::command]
-pub fn save_provider_api_key(provider: String, api_key: String) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
+pub fn save_provider_api_key(
+    provider: String,
+    api_key: String,
+) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
     let provider = provider.trim();
     if provider.is_empty() {
         return Err("provider must not be empty".into());
     }
     let db = credentials_db_path();
-    crate::provider_credentials::save_api_key(&db, provider, &api_key).map_err(|e| e.to_string())?;
+    crate::provider_credentials::save_api_key(&db, provider, &api_key)
+        .map_err(|e| e.to_string())?;
     crate::gateway::refresh_gateway();
     Ok(crate::provider_credentials::list_infos(&db)
         .remove(provider)
@@ -1091,6 +1204,91 @@ pub fn delete_provider_api_key(provider: String) -> Result<bool, String> {
     let deleted = crate::provider_credentials::delete_api_key(&credentials_db_path(), &provider)?;
     crate::gateway::refresh_gateway();
     Ok(deleted)
+}
+
+// ---------------------------------------------------------------------------
+// Provider key verification, model selection, and concurrency calibration.
+// The key is resolved server-side (stored credential or env) and never crosses
+// IPC; only redacted status/limits/selection state are returned.
+// ---------------------------------------------------------------------------
+
+/// Verify a provider's stored key by probing its models endpoint, then persist
+/// the status snapshot the selection UI displays.
+#[tauri::command]
+pub fn verify_provider_key(
+    provider: String,
+) -> Result<crate::provider_verification::KeyVerificationResult, String> {
+    let result =
+        crate::provider_verification::verify_provider_key(&provider, &credentials_db_path());
+    let conn = AppState::global().db();
+    let _ = crate::model_selection::save_key_status(
+        &conn,
+        &provider,
+        &result.status,
+        &result.message,
+        result.checked_at_ms,
+    );
+    Ok(result)
+}
+
+/// Calibrate a model's max concurrency (ladder of probes until rate-limited),
+/// persist the limit, and feed it into the provider-selection engine as a
+/// per-provider in-flight override.
+#[tauri::command]
+pub fn calibrate_model_concurrency(
+    provider: String,
+    model_id: String,
+) -> Result<crate::provider_verification::ConcurrencyCalibrationResult, String> {
+    let result = crate::provider_verification::calibrate_model_concurrency(
+        &provider,
+        &model_id,
+        &credentials_db_path(),
+    );
+    if result.ok {
+        let conn = AppState::global().db();
+        let _ = crate::model_selection::save_concurrency_limit(
+            &conn,
+            &format!("{provider}/{model_id}"),
+            result.limit,
+        );
+        let mut engine = provider_selection()
+            .lock()
+            .expect("lock provider selection");
+        engine.set_max_in_flight_override(&provider, Some(result.limit));
+    }
+    Ok(result)
+}
+
+/// Return the persisted selection state (selected models, disabled providers,
+/// calibrated limits, last key-verification snapshot).
+#[tauri::command]
+pub fn get_selection_state() -> Result<crate::model_selection::SelectionState, String> {
+    let conn = AppState::global().db();
+    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
+}
+
+/// Toggle a model's selected flag and return the refreshed selection state.
+#[tauri::command]
+pub fn set_model_selected(
+    model_id: String,
+    selected: bool,
+) -> Result<crate::model_selection::SelectionState, String> {
+    let conn = AppState::global().db();
+    crate::model_selection::set_model_selected(&conn, &model_id, selected)
+        .map_err(|e| e.to_string())?;
+    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
+}
+
+/// Enable/disable a provider for routing and return the refreshed selection state.
+#[tauri::command]
+pub fn set_provider_enabled(
+    provider: String,
+    enabled: bool,
+) -> Result<crate::model_selection::SelectionState, String> {
+    let conn = AppState::global().db();
+    crate::model_selection::set_provider_enabled(&conn, &provider, enabled)
+        .map_err(|e| e.to_string())?;
+    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1105,8 +1303,18 @@ pub struct RouteModelsInput {
 }
 
 #[tauri::command]
-pub fn route_models(input: RouteModelsInput) -> Result<crate::model_router::RoutingDecision, String> {
-    let catalog = AppState::global().model_catalog();
+pub fn route_models(
+    input: RouteModelsInput,
+) -> Result<crate::model_router::RoutingDecision, String> {
+    let state = AppState::global();
+    let catalog = state.model_catalog();
+    // Route within the user's selection (selected models + enabled providers);
+    // `route_candidates` falls back to the whole catalog when nothing is selected.
+    let selection = {
+        let conn = state.db();
+        crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())?
+    };
+    let candidates = crate::model_selection::route_candidates(&selection, &catalog.all());
     let request = match input.request {
         Some(r) => r,
         None => {
@@ -1114,7 +1322,7 @@ pub fn route_models(input: RouteModelsInput) -> Result<crate::model_router::Rout
             crate::model_router::infer_request(&desc)
         }
     };
-    Ok(crate::model_router::ModelRouter::new().route_live(catalog, &request))
+    Ok(crate::model_router::ModelRouter::new().route_live_filtered(catalog, &candidates, &request))
 }
 
 #[tauri::command]
@@ -1139,15 +1347,21 @@ pub struct OrchestratorStepResponse {
 }
 
 #[tauri::command]
-pub fn run_orchestrator_step(input: OrchestratorStepInput) -> Result<OrchestratorStepResponse, String> {
+pub fn run_orchestrator_step(
+    input: OrchestratorStepInput,
+) -> Result<OrchestratorStepResponse, String> {
     use crate::agent_runtime::LocalAgentRuntime;
     let state = AppState::global();
     let orchestrator = crate::dynamic_orchestrator::DynamicOrchestrator::default();
     let runtime = LocalAgentRuntime;
+    let conn = state.db();
+    let selection = crate::model_selection::load_selection_state(&conn).unwrap_or_default();
+    drop(conn);
     let (result, decision) = orchestrator.dispatch(
         &input.goal,
         &input.step,
         state.model_catalog(),
+        &selection,
         &runtime,
         None,
         "interactive",
@@ -1197,11 +1411,15 @@ pub fn run_orchestrator_autonomous(
     let orchestrator = crate::dynamic_orchestrator::DynamicOrchestrator::default();
     let runtime = LocalAgentRuntime;
     let max_steps = input.max_steps.unwrap_or(5).clamp(1, 10);
+    let conn = state.db();
+    let selection = crate::model_selection::load_selection_state(&conn).unwrap_or_default();
+    drop(conn);
     let report = orchestrator.run_until_done(
         &input.goal,
         input.initial_step.as_deref().unwrap_or(""),
         max_steps,
         state.model_catalog(),
+        &selection,
         &runtime,
         None,
         "interactive",
@@ -1212,8 +1430,6 @@ pub fn run_orchestrator_autonomous(
         steps: report.steps,
     })
 }
-
-
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
@@ -1228,7 +1444,9 @@ pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
 #[tauri::command(rename_all = "snake_case")]
 pub fn resume_pipeline(run_id: String) -> Result<bool, String> {
     let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
-    Ok(active_runs.get(&run_id).is_some_and(|control| control.resume()))
+    Ok(active_runs
+        .get(&run_id)
+        .is_some_and(|control| control.resume()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1263,10 +1481,17 @@ pub fn get_pipeline_status(run_id: String) -> Result<PipelineStatusResponse, Str
     let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
     let state = active_runs.get(&run_id).map(|control| control.state());
     if let Some(state) = state {
-        return Ok(PipelineStatusResponse { run_id, active: true, state: state.into() });
+        return Ok(PipelineStatusResponse {
+            run_id,
+            active: true,
+            state: state.into(),
+        });
     }
     drop(active_runs);
-    let persisted = AppState::global().pipeline_history().get(&run_id).map_err(|error| error.to_string())?;
+    let persisted = AppState::global()
+        .pipeline_history()
+        .get(&run_id)
+        .map_err(|error| error.to_string())?;
     Ok(PipelineStatusResponse {
         run_id,
         active: false,
@@ -1275,12 +1500,23 @@ pub fn get_pipeline_status(run_id: String) -> Result<PipelineStatusResponse, Str
 }
 #[tauri::command(rename_all = "snake_case")]
 pub fn get_pipeline_result(run_id: String) -> Result<Option<PipelineRun>, String> {
-    let json = AppState::global().pipeline_history().get_result_json(&run_id).map_err(|error| error.to_string())?;
+    let json = AppState::global()
+        .pipeline_history()
+        .get_result_json(&run_id)
+        .map_err(|error| error.to_string())?;
     decode_pipeline_result(&run_id, json)
 }
 
-fn decode_pipeline_result(run_id: &str, json: Option<String>) -> Result<Option<PipelineRun>, String> {
-    let run = json.map(|json| serde_json::from_str::<PipelineRun>(&json).map_err(|error| format!("stored pipeline result is invalid: {error}"))).transpose()?;
+fn decode_pipeline_result(
+    run_id: &str,
+    json: Option<String>,
+) -> Result<Option<PipelineRun>, String> {
+    let run = json
+        .map(|json| {
+            serde_json::from_str::<PipelineRun>(&json)
+                .map_err(|error| format!("stored pipeline result is invalid: {error}"))
+        })
+        .transpose()?;
     if run.as_ref().is_some_and(|run| run.run_id != run_id) {
         return Err("stored pipeline result has a mismatched run ID".into());
     }
@@ -1289,7 +1525,9 @@ fn decode_pipeline_result(run_id: &str, json: Option<String>) -> Result<Option<P
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn cancel_build(project_id: String) -> Result<(), String> {
-    crate::app_state::AppState::global().progress_tracker.cancel_build(&project_id);
+    crate::app_state::AppState::global()
+        .progress_tracker
+        .cancel_build(&project_id);
     Ok(())
 }
 
@@ -1308,8 +1546,13 @@ mod pipeline_status_tests {
     #[test]
     fn terminal_statuses_are_distinct_and_orphaned_running_rows_are_unknown() {
         let mut record = PipelineRunHistoryRecord {
-            id: "run-1".into(), goal: "build".into(), status: "completed".into(),
-            step_count: 0, repair_count: 0, success: true, error: None,
+            id: "run-1".into(),
+            goal: "build".into(),
+            status: "completed".into(),
+            step_count: 0,
+            repair_count: 0,
+            success: true,
+            error: None,
             finished_at: std::time::SystemTime::now(),
         };
         assert_eq!(persisted_pipeline_state(Some(&record)), "completed");
@@ -1346,6 +1589,14 @@ mod pipeline_status_tests {
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(decode_pipeline_result("other-run", Some(json.clone())).is_err());
-        assert_eq!(decode_pipeline_result("run-1", Some(json)).unwrap().unwrap().plan.id.as_str(), "plan-1");
+        assert_eq!(
+            decode_pipeline_result("run-1", Some(json))
+                .unwrap()
+                .unwrap()
+                .plan
+                .id
+                .as_str(),
+            "plan-1"
+        );
     }
 }

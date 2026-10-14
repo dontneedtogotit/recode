@@ -155,10 +155,7 @@ fn score_model(
         return disqualified(base, "does not support tool calling".into());
     }
     if request.requires_structured_output && !model.supports_structured_output {
-        return disqualified(
-            base,
-            "does not support reliable structured output".into(),
-        );
+        return disqualified(base, "does not support reliable structured output".into());
     }
 
     // --- Task affinity ---
@@ -243,9 +240,12 @@ impl ModelRouter {
 
         let chosen = if let Some(pref) = &request.preferred_model {
             // Find eligible preferred; promote to top if present.
-            match scores.iter().position(|s| &s.model_id == pref && s.eligible) {
+            match scores
+                .iter()
+                .position(|s| &s.model_id == pref && s.eligible)
+            {
                 Some(idx) => {
-                    let mut chosen = scores.remove(idx);
+                    let chosen = scores.remove(idx);
                     scores.insert(0, chosen.clone());
                     Some(chosen)
                 }
@@ -262,13 +262,20 @@ impl ModelRouter {
         }
     }
 
-    /// Like `route`, but consults live learned stats from `catalog`.
-    pub fn route_live(
+    /// Like `route_live`, but scores only `candidates` (e.g. the user-selected
+    /// and provider-enabled subset). Empty candidate lists fall back to the
+    /// whole catalog so routing never runs dry.
+    pub fn route_live_filtered(
         &self,
         catalog: &ModelCatalog,
+        candidates: &[ModelInfo],
         request: &RoutingRequest,
     ) -> RoutingDecision {
-        let candidates = catalog.all();
+        let candidates = if candidates.is_empty() {
+            Vec::from(catalog.all())
+        } else {
+            candidates.to_vec()
+        };
         let mut scores: Vec<CandidateScore> = candidates
             .iter()
             .map(|m| {
@@ -281,9 +288,12 @@ impl ModelRouter {
         scores.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         let chosen = if let Some(pref) = &request.preferred_model {
-            match scores.iter().position(|s| &s.model_id == pref && s.eligible) {
+            match scores
+                .iter()
+                .position(|s| &s.model_id == pref && s.eligible)
+            {
                 Some(idx) => {
-                    let mut chosen = scores.remove(idx);
+                    let chosen = scores.remove(idx);
                     scores.insert(0, chosen.clone());
                     Some(chosen)
                 }
@@ -298,6 +308,12 @@ impl ModelRouter {
             ranked: scores,
             considered,
         }
+    }
+
+    /// Like `route`, but consults live learned stats from `catalog` (whole
+    /// catalog — use `route_live_filtered` for a user-filtered subset).
+    pub fn route_live(&self, catalog: &ModelCatalog, request: &RoutingRequest) -> RoutingDecision {
+        self.route_live_filtered(catalog, &catalog.all(), request)
     }
 }
 
@@ -414,7 +430,13 @@ mod tests {
     #[test]
     fn disqualifies_when_context_too_small() {
         let router = ModelRouter::new();
-        let candidates = vec![coding_model("openai/small", 0.95, CostTier::Low, true, 8_000)];
+        let candidates = vec![coding_model(
+            "openai/small",
+            0.95,
+            CostTier::Low,
+            true,
+            8_000,
+        )];
         let req = RoutingRequest {
             task_kind: TaskKind::Coding,
             min_context_window: 100_000,
@@ -433,7 +455,13 @@ mod tests {
     #[test]
     fn disqualifies_missing_tools() {
         let router = ModelRouter::new();
-        let candidates = vec![coding_model("openai/notools", 0.95, CostTier::Low, false, 128_000)];
+        let candidates = vec![coding_model(
+            "openai/notools",
+            0.95,
+            CostTier::Low,
+            false,
+            128_000,
+        )];
         let req = RoutingRequest {
             task_kind: TaskKind::Coding,
             requires_tools: true,
@@ -479,10 +507,7 @@ mod tests {
         req.preferred_model = Some("openai/weak".into());
         let decision = router.route(&candidates, &req);
         // weak is ineligible (no tools) so strong should win.
-        assert_eq!(
-            decision.chosen.unwrap().model_id,
-            "openai/strong"
-        );
+        assert_eq!(decision.chosen.unwrap().model_id, "openai/strong");
     }
 
     #[test]
@@ -518,9 +543,6 @@ mod tests {
         };
         let decision = router.route_live(&catalog, &req);
         // equal affinity + cost, so learned speed/reliability decides.
-        assert_eq!(
-            decision.chosen.unwrap().model_id,
-            "openai/weak"
-        );
+        assert_eq!(decision.chosen.unwrap().model_id, "openai/weak");
     }
 }

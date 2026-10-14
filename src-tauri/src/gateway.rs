@@ -201,10 +201,7 @@ impl<A: ProviderAdapter + 'static> DefaultGatewayService<A> {
     }
 
     fn resolve_adapter(&self, request: &GatewayRequest) -> Arc<dyn ProviderAdapter> {
-        let task_type = request
-            .task_type
-            .as_ref()
-            .map(|value| value.to_lowercase());
+        let task_type = request.task_type.as_ref().map(|value| value.to_lowercase());
 
         if let Some(task_type) = task_type {
             let routes = self.routing.lock().expect("lock routing");
@@ -245,7 +242,9 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
                 ),
                 detail: None,
             });
-            return Err(DomainError::unavailable("gateway blocked by circuit breaker"));
+            return Err(DomainError::unavailable(
+                "gateway blocked by circuit breaker",
+            ));
         }
         drop(breaker);
 
@@ -270,7 +269,13 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
     }
 
     fn circuit_breaker_state(&self) -> Option<CircuitBreakerState> {
-        Some(self._circuit_breaker().lock().expect("lock breaker").state().clone())
+        Some(
+            self._circuit_breaker()
+                .lock()
+                .expect("lock breaker")
+                .state()
+                .clone(),
+        )
     }
 
     fn is_configured(&self) -> bool {
@@ -280,7 +285,9 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
 
 pub trait GatewayService: Send + Sync {
     fn send(&self, request: GatewayRequest) -> Result<GatewayResponse, DomainError>;
-    fn is_configured(&self) -> bool { true }
+    fn is_configured(&self) -> bool {
+        true
+    }
     fn circuit_breaker_state(&self) -> Option<CircuitBreakerState> {
         None
     }
@@ -289,7 +296,9 @@ pub trait GatewayService: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_monitor::{RuntimeMonitorService, tests_helpers::service as monitor_service};
+    use crate::runtime_monitor::{
+        tests_helpers::service as monitor_service, RuntimeMonitorService,
+    };
     #[derive(Debug, Clone)]
     struct TestAdapter {
         capabilities: ProviderCapabilities,
@@ -389,15 +398,15 @@ mod tests {
                 preferred_task_types: vec![],
             },
         });
-        let service = DefaultGatewayService::new(adapter, CircuitBreakerConfig {
-            failure_threshold: 1,
-            recovery_timeout: Duration::from_secs(60),
-        });
+        let service = DefaultGatewayService::new(
+            adapter,
+            CircuitBreakerConfig {
+                failure_threshold: 1,
+                recovery_timeout: Duration::from_secs(60),
+            },
+        );
         {
-            let mut breaker = service
-                ._circuit_breaker()
-                .lock()
-                .expect("lock breaker");
+            let mut breaker = service._circuit_breaker().lock().expect("lock breaker");
             breaker.record_failure();
         }
 
@@ -487,7 +496,9 @@ impl ProviderAdapter for StubAdapter {
 /// key but not an explicit base URL. Unknown providers return `None` (the
 /// caller then requires an explicit base URL). All are HTTPS, so the adapter's
 /// transport policy accepts them.
-fn default_endpoint(provider: &str) -> Option<&'static str> {
+/// Public so `model_selection::resolve_router_provider` can resolve a base
+/// URL for a routed provider with no stored one.
+pub fn default_endpoint(provider: &str) -> Option<&'static str> {
     match provider.to_lowercase().as_str() {
         "openai" => Some("https://api.openai.com/v1"),
         "anthropic" => Some("https://api.anthropic.com/v1"),
@@ -508,7 +519,10 @@ fn default_endpoint(provider: &str) -> Option<&'static str> {
 /// stored key plus a resolvable base URL and model (either stored or a
 /// well-known default). Returns `Err` when any of those is missing, which the
 /// caller treats as "no usable stored provider".
-fn resolve_stored_adapter() -> Result<OpenAICompatibleAdapter, DomainError> {
+///
+/// Public so `pipeline::engine` can fall back to the GUI-stored provider
+/// (the model the user configured) when no env adapter is set.
+pub fn resolve_stored_adapter() -> Result<OpenAICompatibleAdapter, DomainError> {
     let path = crate::tauri_commands::credentials_db_path();
     if !std::path::Path::new(&path).exists() {
         return Err(DomainError::unavailable("no stored provider credentials"));
@@ -517,8 +531,8 @@ fn resolve_stored_adapter() -> Result<OpenAICompatibleAdapter, DomainError> {
         .ok_or_else(|| DomainError::unavailable("no provider key stored"))?;
     let key = crate::provider_credentials::load_api_key(&path, &provider)
         .ok_or_else(|| DomainError::unavailable("stored key missing"))?;
-    let (base, model) = crate::provider_credentials::load_config(&path, &provider)
-        .unwrap_or((None, None));
+    let (base, model) =
+        crate::provider_credentials::load_config(&path, &provider).unwrap_or((None, None));
     let base = base
         .filter(|b| !b.trim().is_empty())
         .or_else(|| default_endpoint(&provider).map(|s| s.to_string()))

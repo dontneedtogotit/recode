@@ -5,8 +5,10 @@ import { Row } from './Row';
 import { EmptyState } from './EmptyState';
 import { SectionHeader } from './SectionHeader';
 import {
+  calibrateModelConcurrency,
   discoverProviderModels,
   deleteProviderApiKey,
+  getSelectionState,
   importEnvApiKey,
   inferRoutingRequest,
   listModels,
@@ -14,16 +16,21 @@ import {
   removeModel,
   routeModels,
   saveProviderApiKey,
+  setModelSelected,
+  setProviderEnabled,
+  verifyProviderKey,
   runOrchestratorStep,
   runOrchestratorAutonomous,
   upsertModel,
   type CandidateScore,
   type CostTier,
+  type KeyVerificationResult,
   type Modality,
   type ModelInfo,
   type ProviderCredentialInfo,
   type RoutingDecision,
   type RoutingRequest,
+  type SelectionState,
   type OrchestratorStepResult,
   type OrchestratorAutonomousResult,
   type UpsertModelInput,
@@ -76,6 +83,13 @@ export function ModelsPanel() {
   const [filterProvider, setFilterProvider] = useState('');
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
 
+  // Selection state: which models the router may pick, which providers are
+  // enabled, calibrated concurrency limits, last key-verification snapshot.
+  const [selection, setSelection] = useState<SelectionState | null>(null);
+  const [verifying, setVerifying] = useState<string | null>(null);
+  const [verifyResults, setVerifyResults] = useState<Record<string, KeyVerificationResult>>({});
+  const [calibrating, setCalibrating] = useState<string | null>(null);
+
   // Model editor form.
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<UpsertModelInput>(EMPTY_FORM);
@@ -102,9 +116,14 @@ export function ModelsPanel() {
   const [autoResult, setAutoResult] = useState<OrchestratorAutonomousResult | null>(null);
 
   const refresh = useCallback(async () => {
-    const [nextModels, nextCreds] = await Promise.all([listModels(), listProviderCredentials()]);
+    const [nextModels, nextCreds, nextSelection] = await Promise.all([
+      listModels(),
+      listProviderCredentials(),
+      getSelectionState(),
+    ]);
     setModels(nextModels);
     setCreds(nextCreds);
+    setSelection(nextSelection);
   }, []);
 
   useEffect(() => {
@@ -143,11 +162,70 @@ export function ModelsPanel() {
     );
 
   const importKey = (provider: string) =>
-    runProviderAction(provider, () => importEnvApiKey(provider), `API key imported into the local credential store for ${provider}.`);
+    runProviderAction(
+      provider,
+      async () => {
+        await importEnvApiKey(provider);
+        // Key just entered the store — verify it against the live endpoint and
+        // auto-discover when it is valid.
+        await verifyKey(provider, true);
+      },
+      `API key imported into the local credential store for ${provider}.`,
+    );
 
   const deleteKey = (provider: string) => {
     if (!window.confirm(`Remove the stored API key for ${provider}?`)) return;
     void runProviderAction(provider, () => deleteProviderApiKey(provider), `API key removed for ${provider}.`);
+  };
+
+  // Verify the stored key against the provider's live models endpoint, then
+  // auto-discover when the key is valid (design of record: save key → auto
+  // verify → auto discover).
+  const verifyKey = async (provider: string, thenDiscover: boolean) => {
+    if (verifying) return;
+    setVerifying(provider);
+    setError(null);
+    try {
+      const result = await verifyProviderKey(provider);
+      setVerifyResults((prev) => ({ ...prev, [provider]: result }));
+      const label =
+        result.status === 'valid'
+          ? `${provider} key verified${result.modelCount > 0 ? ` (${result.modelCount} models)` : ''}.`
+          : `${provider} key check: ${result.status} — ${result.message}`;
+      if (result.status === 'valid' && thenDiscover) {
+        await discoverProviderModels(provider);
+        await refresh();
+        flash(`${label} Models refreshed.`);
+      } else {
+        await refresh();
+        flash(label);
+      }
+    } catch (e) {
+      setError(`Verify ${provider} failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  // Calibrate a model's max concurrency: ladder of parallel probes until the
+  // provider rate-limits; the limit is persisted and shown on the model row.
+  const calibrate = async (provider: string, modelId: string) => {
+    if (calibrating) return;
+    setCalibrating(`${provider}/${modelId}`);
+    setError(null);
+    try {
+      const result = await calibrateModelConcurrency(provider, modelId);
+      await refresh();
+      flash(
+        result.ok
+          ? `Concurrency calibrated for ${provider}/${modelId}: max ${result.limit} (stopped: ${result.stoppedReason}).`
+          : `Calibration for ${provider}/${modelId} stopped: ${result.stoppedReason}.`,
+      );
+    } catch (e) {
+      setError(`Calibrate ${provider}/${modelId} failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setCalibrating(null);
+    }
   };
 
   // Paste a key directly from the GUI into the local credential store.
@@ -163,14 +241,16 @@ export function ModelsPanel() {
       provider,
       async () => {
         const info = await saveProviderApiKey(provider, raw);
-                  setKeyEntry((prev) => {
-                    const next = { ...prev };
-                    delete next[provider];
-                    return next;
-                  });
-                  if (!info || !info.baseUrl) {
-                    setNotice(`Key stored for ${provider}. Set a base URL (or leave it — known providers use a built-in default) before discovering.`);
-                  }
+        setKeyEntry((prev) => {
+          const next = { ...prev };
+          delete next[provider];
+          return next;
+        });
+        if (!info || !info.baseUrl) {
+          setNotice(`Key stored for ${provider}. Set a base URL (or leave it — known providers use a built-in default) before discovering.`);
+        }
+        // Key just stored — verify it live and auto-discover when valid.
+        await verifyKey(provider, true);
       },
       `API key stored locally for ${provider}.`,
     );
@@ -350,6 +430,10 @@ export function ModelsPanel() {
           {KNOWN_PROVIDERS.map((provider) => {
             const cred = creds[provider];
             const busy = busyProvider === provider;
+            const keyStatus =
+              verifyResults[provider] ??
+              selection?.providerVerification.find((v) => v.provider === provider);
+            const providerEnabled = !selection?.disabledProviders.includes(provider);
             return (
               <div key={provider} className="provider-row">
                 <div style={{ minWidth: 0, flex: 1 }}>
@@ -359,6 +443,20 @@ export function ModelsPanel() {
                     {cred?.baseUrl ? ` · ${cred.baseUrl}` : ''}
                     {cred?.defaultModel ? ` · default ${cred.defaultModel}` : ''}
                   </div>
+                  {keyStatus && (
+                    <div className="row" style={{ gap: 6, marginTop: 6, alignItems: 'center' }}>
+                      <span
+                        className={`badge ${
+                          keyStatus.status === 'valid' ? 'ok' : keyStatus.status === 'invalid' ? 'err' : 'warn'
+                        }`}
+                      >
+                        key {keyStatus.status}
+                      </span>
+                      <span className="text-sm text-muted" title={keyStatus.message}>
+                        {keyStatus.message}
+                      </span>
+                    </div>
+                  )}
                   {keyEntryOpen === provider && (
                     <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
                       <input
@@ -394,9 +492,39 @@ export function ModelsPanel() {
                   <button type="button" className="ghost" disabled={busy || !cred?.hasApiKey} onClick={() => deleteKey(provider)}>
                     Remove key
                   </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy || verifying === provider || !cred?.hasApiKey}
+                    onClick={() => verifyKey(provider, false)}
+                  >
+                    {verifying === provider ? 'Verifying…' : 'Verify key'}
+                  </button>
                   <button type="button" disabled={busy} onClick={() => discover(provider)}>
                     {busy ? 'Discovering…' : 'Discover models'}
                   </button>
+                  <label
+                    className="text-sm"
+                    title="Enable or disable this provider for routing"
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={providerEnabled}
+                      disabled={busy}
+                      onChange={(e) => {
+                        void (async () => {
+                          try {
+                            setSelection(await setProviderEnabled(provider, e.target.checked));
+                            flash(`${provider} ${e.target.checked ? 'enabled' : 'disabled'} for routing.`);
+                          } catch (err) {
+                            setError(`Toggle ${provider} failed: ${err instanceof Error ? err.message : String(err)}`);
+                          }
+                        })();
+                      }}
+                    />{' '}
+                    routing
+                  </label>
                 </div>
               </div>
             );
@@ -592,14 +720,38 @@ export function ModelsPanel() {
           />
         ) : (
           <div className="provider-list">
-            {visibleModels.map((model) => (
+            {visibleModels.map((model) => {
+              const selected = selection?.selectedModels.includes(model.id) ?? false;
+              const limitRecord = selection?.concurrencyLimits.find((l) => l.modelId === model.id);
+              const calibratingThis = calibrating === model.id;
+              return (
               <div key={model.id} className="provider-row">
-                <div style={{ minWidth: 0 }}>
-                  <div className="section-header-title">
-                    {model.name} <span className="text-muted text-sm">· {model.id}</span>
-                  </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <label
+                    className="text-sm"
+                    title="Include this model in the set the router may pick (nothing selected = router uses the whole catalog)"
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(e) => {
+                        void (async () => {
+                          try {
+                            setSelection(await setModelSelected(model.id, e.target.checked));
+                          } catch (err) {
+                            setError(`Select ${model.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+                          }
+                        })();
+                      }}
+                    />{' '}
+                    <span>
+                      {model.name} <span className="text-muted">{model.id}</span>
+                    </span>
+                  </label>
                   <div className="text-sm text-muted">
                     {formatTokens(model.contextWindow)} ctx · max out {formatTokens(model.maxOutputTokens)} · {model.costTier}
+                    {limitRecord ? ` · concurrency ≤ ${limitRecord.limit}` : ''}
                     {model.promptPricePerMtok != null
                       ? ` · $${model.promptPricePerMtok}/M in, $${model.completionPricePerMtok ?? '?'}/M out`
                       : ''}
@@ -623,11 +775,25 @@ export function ModelsPanel() {
                   </div>
                 </div>
                 <div className="row">
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={calibratingThis || !creds[model.provider]?.hasApiKey}
+                    title={
+                      creds[model.provider]?.hasApiKey
+                        ? 'Probe the provider until it rate-limits and store the max safe concurrency'
+                        : 'Store an API key for this provider first'
+                    }
+                    onClick={() => calibrate(model.provider, model.modelId)}
+                  >
+                    {calibratingThis ? 'Calibrating…' : 'Calibrate concurrency'}
+                  </button>
                   <button type="button" className="ghost" onClick={() => openEditForm(model)}>Edit</button>
                   <button type="button" className="ghost" onClick={() => remove(model.id)}>Remove</button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>

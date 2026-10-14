@@ -1,16 +1,21 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::domain::Result;
-use crate::event_bus::{DomainEvent, EventBus, now_millis};
-use crate::planner::{Plan, PlanStep, Planner, StepProgress};
-use crate::pipeline::types::{BuildOutcome, FileGenerationPrompt, GeneratedFile, GeneratedFileStatus, LocalFileGenerationService};
-use crate::pipeline::verify::{verify_workspace, DefaultVerificationStage, GateStatus, VerificationResult};
 use super::outcome::{evaluate_required_gates, GateDecision, REQUIRED_GATES};
-use crate::pipeline::{PipelineInput, PipelineRun};
-use crate::self_heal::{RepairAction, SelfHealService};
-use crate::runtime_monitor::MonitorEvent;
+use crate::domain::Result;
+use crate::event_bus::{now_millis, DomainEvent, EventBus};
 use crate::pipeline::ledger::LEDGER_PROJECT_ID;
+use crate::pipeline::types::{
+    BuildOutcome, FileGenerationPrompt, GeneratedFile, GeneratedFileStatus,
+    LocalFileGenerationService,
+};
+use crate::pipeline::verify::{
+    verify_workspace, DefaultVerificationStage, GateStatus, VerificationResult,
+};
+use crate::pipeline::{PipelineInput, PipelineRun};
+use crate::planner::{Plan, PlanStep, Planner, StepProgress};
+use crate::runtime_monitor::MonitorEvent;
+use crate::self_heal::{RepairAction, SelfHealService};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn apply_verification(
@@ -21,23 +26,28 @@ fn apply_verification(
     if assessment.decision != GateDecision::Satisfied {
         outcome.success = false;
         outcome.degraded = true;
-        outcome.summary.push_str(if assessment.decision == GateDecision::Failed {
-            "; verification failed: "
-        } else {
-            "; verification blocked: "
-        });
+        outcome
+            .summary
+            .push_str(if assessment.decision == GateDecision::Failed {
+                "; verification failed: "
+            } else {
+                "; verification blocked: "
+            });
         outcome.summary.push_str(&assessment.blockers.join("; "));
     }
 }
 
 fn failed_prompts(prompts: &[FileGenerationPrompt], error: &str) -> Vec<GeneratedFile> {
-    prompts.iter().map(|prompt| GeneratedFile {
-        path: prompt.file_path.clone(),
-        content: String::new(),
-        language: Some(prompt.language.clone()),
-        status: GeneratedFileStatus::Failed,
-        error: Some(error.to_owned()),
-    }).collect()
+    prompts
+        .iter()
+        .map(|prompt| GeneratedFile {
+            path: prompt.file_path.clone(),
+            content: String::new(),
+            language: Some(prompt.language.clone()),
+            status: GeneratedFileStatus::Failed,
+            error: Some(error.to_owned()),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -74,7 +84,11 @@ pub struct LocalPipelineEngine<'a> {
 
 impl<'a> LocalPipelineEngine<'a> {
     pub fn new(event_bus: &'a EventBus, self_heal: &'a dyn SelfHealService) -> Self {
-        Self { event_bus, self_heal, execution_consent: Default::default() }
+        Self {
+            event_bus,
+            self_heal,
+            execution_consent: Default::default(),
+        }
     }
 
     pub fn run_with_cancellation(
@@ -95,13 +109,13 @@ impl<'a> LocalPipelineEngine<'a> {
         } else {
             Arc::new(AtomicBool::new(false))
         };
-        
+
         let result = self.run_internal(input.clone(), cancel, planner, runtime);
-        
+
         if let Some(project_id) = &input.project_id {
             progress_tracker.cleanup_active_build(project_id);
         }
-        
+
         result
     }
 
@@ -233,11 +247,7 @@ impl<'a> LocalPipelineEngine<'a> {
         &self,
         workspace_root: Option<&Path>,
         goal: &str,
-    ) -> (
-        Vec<GeneratedFile>,
-        Vec<GeneratedFile>,
-        BuildOutcome,
-    ) {
+    ) -> (Vec<GeneratedFile>, Vec<GeneratedFile>, BuildOutcome) {
         self.generate_project_files_cancellable(workspace_root, goal, &|| false)
     }
 
@@ -247,16 +257,64 @@ impl<'a> LocalPipelineEngine<'a> {
         goal: &str,
         should_cancel: &dyn Fn() -> bool,
     ) -> (Vec<GeneratedFile>, Vec<GeneratedFile>, BuildOutcome) {
-        let provider = crate::gateway::OpenAICompatibleAdapter::from_env().map(|adapter| {
+        let provider = Self::resolve_provider_for_generation();
+        self.generate_project_files_with_provider_cancellable(
+            workspace_root,
+            goal,
+            provider,
+            should_cancel,
+        )
+    }
+
+    /// Resolve the LLM provider to generate with, in priority order:
+    /// 1. Explicit operator env override (`RECODE_OPENAI_*`).
+    /// 2. The live router over the persisted selection state -> stored
+    ///    provider credentials (the provider the user configured in the GUI).
+    /// 3. Stored-credential fallback (most recently saved key) when routing
+    ///    could not decide (empty catalog, no selection, etc.).
+    /// Returns `Err(Unavailable)` when nothing usable is configured, which the
+    /// caller degrades to scaffold-only generation rather than a crash.
+    fn resolve_provider_for_generation(
+    ) -> Result<(Arc<dyn crate::gateway::GatewayService>, String), crate::domain::DomainError> {
+        // 1. Env override.
+        if let Ok(adapter) = crate::gateway::OpenAICompatibleAdapter::from_env() {
             let gateway: Arc<dyn crate::gateway::GatewayService> =
                 Arc::new(crate::gateway::DefaultGatewayService::new(
                     Arc::new(adapter),
                     crate::gateway::CircuitBreakerConfig::default(),
                 ));
             let model = std::env::var("RECODE_OPENAI_MODEL").unwrap_or_else(|_| "gpt-6-sol".into());
-            (gateway, model)
-        });
-        self.generate_project_files_with_provider_cancellable(workspace_root, goal, provider, should_cancel)
+            return Ok((gateway, model));
+        }
+
+        // 2. Router over persisted selection state + stored credentials.
+        let catalog = crate::app_state::AppState::global().model_catalog();
+        if let Ok(resolved) = crate::model_selection::resolve_router_provider(catalog) {
+            return Ok(resolved);
+        }
+
+        // 3. Stored-credential fallback (most recently saved GUI provider).
+        let path = crate::tauri_commands::credentials_db_path();
+        if let (Some(provider), Ok(adapter)) = (
+            crate::provider_credentials::latest_keyed_provider(&path),
+            crate::gateway::resolve_stored_adapter(),
+        ) {
+            let (_, stored_model) =
+                crate::provider_credentials::load_config(&path, &provider).unwrap_or((None, None));
+            let model = stored_model
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| "default".into());
+            let gateway: Arc<dyn crate::gateway::GatewayService> =
+                Arc::new(crate::gateway::DefaultGatewayService::new(
+                    Arc::new(adapter),
+                    crate::gateway::CircuitBreakerConfig::default(),
+                ));
+            return Ok((gateway, model));
+        }
+
+        Err(crate::domain::DomainError::unavailable(
+            "no LLM provider configured: set RECODE_OPENAI_* env vars or save a provider key in the Models panel",
+        ))
     }
 
     fn generate_project_files_with_provider(
@@ -265,7 +323,12 @@ impl<'a> LocalPipelineEngine<'a> {
         goal: &str,
         provider: Result<(Arc<dyn crate::gateway::GatewayService>, String)>,
     ) -> (Vec<GeneratedFile>, Vec<GeneratedFile>, BuildOutcome) {
-        self.generate_project_files_with_provider_cancellable(workspace_root, goal, provider, &|| false)
+        self.generate_project_files_with_provider_cancellable(
+            workspace_root,
+            goal,
+            provider,
+            &|| false,
+        )
     }
 
     fn generate_project_files_with_provider_cancellable(
@@ -355,8 +418,14 @@ impl<'a> LocalPipelineEngine<'a> {
 
         // Generation ledger (ported from devcode): reuse files whose on-disk
         // bytes still match the last successful generation for these inputs.
-        let model = provider.as_ref().map(|(_, model)| model.clone()).unwrap_or_default();
-        let file_paths: Vec<String> = prompts.iter().map(|prompt| prompt.file_path.clone()).collect();
+        let model = provider
+            .as_ref()
+            .map(|(_, model)| model.clone())
+            .unwrap_or_default();
+        let file_paths: Vec<String> = prompts
+            .iter()
+            .map(|prompt| prompt.file_path.clone())
+            .collect();
         // Scaffold files are deterministic: exclude them from the ledger
         // inputs hash so the hash reflects only the LLM-generated source
         // files. This prevents a goal change from invalidating the ledger
@@ -366,7 +435,11 @@ impl<'a> LocalPipelineEngine<'a> {
         let source_path_set: std::collections::HashSet<&str> =
             source_paths.iter().map(|s| s.as_str()).collect();
         let ledger_file_paths: Vec<String> = source_paths.clone();
-        let inputs_hash = crate::pipeline::ledger::compute_generation_inputs_hash(goal, &model, &ledger_file_paths);
+        let inputs_hash = crate::pipeline::ledger::compute_generation_inputs_hash(
+            goal,
+            &model,
+            &ledger_file_paths,
+        );
 
         let mut generated = Vec::new();
         let mut failed = Vec::new();
@@ -383,12 +456,13 @@ impl<'a> LocalPipelineEngine<'a> {
             .cloned()
             .collect();
         if !scaffold_paths.is_empty() {
-            let project_name = goal.split_whitespace().take(3).collect::<Vec<_>>().join("-");
-            let scaffold_files = crate::pipeline::scaffolder::scaffold_files(
-                &file_paths,
-                &project_name,
-                goal,
-            );
+            let project_name = goal
+                .split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("-");
+            let scaffold_files =
+                crate::pipeline::scaffolder::scaffold_files(&file_paths, &project_name, goal);
             for file in scaffold_files {
                 if let Some(workspace_root) = workspace_root {
                     match crate::workspace::safe_file_target(workspace_root, &file.path) {
@@ -464,12 +538,11 @@ impl<'a> LocalPipelineEngine<'a> {
                 &attempt_id,
                 &inputs_hash,
             );
-            let mut checkpoint_state =
-                crate::pipeline::checkpoint::GenerationCheckpoint::running(
-                    LEDGER_PROJECT_ID,
-                    attempt_id.clone(),
-                    inputs_hash.clone(),
-                );
+            let mut checkpoint_state = crate::pipeline::checkpoint::GenerationCheckpoint::running(
+                LEDGER_PROJECT_ID,
+                attempt_id.clone(),
+                inputs_hash.clone(),
+            );
             // Resumed files are this attempt's progress too (devcode's
             // checkpoint carries completed stage data forward): inherit them
             // so a later failure still resumes from this point.
@@ -480,10 +553,8 @@ impl<'a> LocalPipelineEngine<'a> {
                     let _ = checkpoint_state.record(path, sha256);
                 }
             }
-            let _ = crate::pipeline::checkpoint::persist_checkpoint(
-                workspace_root,
-                &checkpoint_state,
-            );
+            let _ =
+                crate::pipeline::checkpoint::persist_checkpoint(workspace_root, &checkpoint_state);
             let regenerate_prompts: Vec<_> = source_prompts
                 .iter()
                 .filter(|prompt| {
@@ -524,17 +595,18 @@ impl<'a> LocalPipelineEngine<'a> {
             match provider {
                 Ok((gateway, model)) => {
                     let generator = LocalFileGenerationService::new(
-                        crate::workspace::LocalWorkspaceService, gateway, model,
+                        crate::workspace::LocalWorkspaceService,
+                        gateway,
+                        model,
                     );
-                    let mut persist_progress =
-                        |file_path: &str, content: &str| {
-                            let sha256 = crate::pipeline::ledger::content_sha256(content);
-                            let _ = checkpoint_state.record(file_path, sha256);
-                            let _ = crate::pipeline::checkpoint::persist_checkpoint(
-                                workspace_root,
-                                &checkpoint_state,
-                            );
-                        };
+                    let mut persist_progress = |file_path: &str, content: &str| {
+                        let sha256 = crate::pipeline::ledger::content_sha256(content);
+                        let _ = checkpoint_state.record(file_path, sha256);
+                        let _ = crate::pipeline::checkpoint::persist_checkpoint(
+                            workspace_root,
+                            &checkpoint_state,
+                        );
+                    };
                     match generator.generate_and_write_tracked(
                         workspace_root,
                         &regenerate_prompts,
@@ -545,16 +617,23 @@ impl<'a> LocalPipelineEngine<'a> {
                         Ok(results) => {
                             for file in results {
                                 if matches!(file.status, GeneratedFileStatus::Written) {
-                                    LocalFileGenerationService::upsert_generated_file(&mut generated, file);
+                                    LocalFileGenerationService::upsert_generated_file(
+                                        &mut generated,
+                                        file,
+                                    );
                                 } else {
                                     failed.push(file);
                                 }
                             }
                         }
-                        Err(error) => failed.extend(failed_prompts(&regenerate_prompts, &error.to_string())),
+                        Err(error) => {
+                            failed.extend(failed_prompts(&regenerate_prompts, &error.to_string()))
+                        }
                     }
                 }
-                Err(error) => failed.extend(failed_prompts(&regenerate_prompts, &error.to_string())),
+                Err(error) => {
+                    failed.extend(failed_prompts(&regenerate_prompts, &error.to_string()))
+                }
             }
 
             // Persist checksums of every successfully written file so future
@@ -562,12 +641,14 @@ impl<'a> LocalPipelineEngine<'a> {
             if failed.is_empty() {
                 let mut written: BTreeMap<String, String> = BTreeMap::new();
                 for file in generated.iter().filter(|file| {
-                    matches!(file.status, GeneratedFileStatus::Written | GeneratedFileStatus::Reused)
-                        && source_path_set.contains(file.path.as_str())
+                    matches!(
+                        file.status,
+                        GeneratedFileStatus::Written | GeneratedFileStatus::Reused
+                    ) && source_path_set.contains(file.path.as_str())
                 }) {
-                    if let Some(sha256) = crate::pipeline::ledger::file_sha256(
-                        &workspace_root.join(&file.path),
-                    ) {
+                    if let Some(sha256) =
+                        crate::pipeline::ledger::file_sha256(&workspace_root.join(&file.path))
+                    {
                         written.insert(file.path.clone(), sha256);
                     }
                 }
@@ -646,7 +727,11 @@ impl<'a> LocalPipelineEngine<'a> {
             }
         } else if generated.is_empty() {
             if let Some(error) = failed.first().and_then(|file| file.error.as_deref()) {
-                format!("generated 0 of {} files, {} failed: {error}", prompts.len(), failed.len())
+                format!(
+                    "generated 0 of {} files, {} failed: {error}",
+                    prompts.len(),
+                    failed.len()
+                )
             } else {
                 format!("generated 0 of {} files", prompts.len())
             }
@@ -726,14 +811,14 @@ impl<'a> LocalPipelineEngine<'a> {
                     content: f.content.clone(),
                 })
                 .collect();
-            let repaired = repair_service.apply_repair(
-                &repair_result.suggestions[0],
-                &file_snapshots,
-            );
+            let repaired =
+                repair_service.apply_repair(&repair_result.suggestions[0], &file_snapshots);
             // Write repaired files back to disk and update the generated list.
             for repaired_file in &repaired {
                 if let Some(workspace_root) = workspace_root {
-                    if let Ok(target) = crate::workspace::safe_file_target(workspace_root, &repaired_file.path) {
+                    if let Ok(target) =
+                        crate::workspace::safe_file_target(workspace_root, &repaired_file.path)
+                    {
                         let _ = std::fs::write(&target, &repaired_file.content);
                     }
                 }
@@ -774,24 +859,30 @@ impl<'a> LocalPipelineEngine<'a> {
                 .collect();
             let skipped_checks: Vec<String> = verification_results
                 .iter()
-                .filter(|r| r.evidence.as_ref().is_some_and(|e| e.status == crate::pipeline::verify::GateStatus::Skipped))
+                .filter(|r| {
+                    r.evidence
+                        .as_ref()
+                        .is_some_and(|e| e.status == crate::pipeline::verify::GateStatus::Skipped)
+                })
                 .map(|r| r.gate.clone())
                 .collect();
             let mut analyzer = crate::pipeline::outcome_analyzer::BuildOutcomeAnalyzer::new();
-            analyzer.analyze(crate::pipeline::outcome_analyzer::BuildOutcomeAnalysisInput {
-                outcome: crate::pipeline::outcome_analyzer::OutcomeAnalysisOutcome {
-                    success,
-                    degraded: !failed.is_empty(),
-                    failed_checks,
-                    skipped_checks,
-                    summary: outcome_summary,
-                    stage: "verification".into(),
+            analyzer.analyze(
+                crate::pipeline::outcome_analyzer::BuildOutcomeAnalysisInput {
+                    outcome: crate::pipeline::outcome_analyzer::OutcomeAnalysisOutcome {
+                        success,
+                        degraded: !failed.is_empty(),
+                        failed_checks,
+                        skipped_checks,
+                        summary: outcome_summary,
+                        stage: "verification".into(),
+                    },
+                    generated_file_count: generated.len(),
+                    persisted_file_count: generated.len(),
+                    duration_ms: 0,
+                    verification_results: None,
                 },
-                generated_file_count: generated.len(),
-                persisted_file_count: generated.len(),
-                duration_ms: 0,
-                verification_results: None,
-            })
+            )
         };
 
         // Verification report service: generate comprehensive report (ported
@@ -807,7 +898,11 @@ impl<'a> LocalPipelineEngine<'a> {
                 .collect();
             let skipped_checks: Vec<String> = verification_results
                 .iter()
-                .filter(|r| r.evidence.as_ref().is_some_and(|e| e.status == crate::pipeline::verify::GateStatus::Skipped))
+                .filter(|r| {
+                    r.evidence
+                        .as_ref()
+                        .is_some_and(|e| e.status == crate::pipeline::verify::GateStatus::Skipped)
+                })
                 .map(|r| r.gate.clone())
                 .collect();
             report_service.generate_report(&crate::pipeline::report::VerificationReportInput {
@@ -855,22 +950,29 @@ impl<'a> LocalPipelineEngine<'a> {
             crate::pipeline::production_readiness::ProductionReadinessService.evaluate(&prod_files)
         };
 
-        let accessibility_result = crate::pipeline::accessibility_audit::AccessibilityAuditService.audit(
-            crate::pipeline::accessibility_audit::AccessibilityAuditInput {
-                files: generated.iter().map(|f| crate::pipeline::accessibility_audit::FileContent {
-                    path: f.path.clone(),
-                    content: f.content.clone(),
-                }).collect()
-            }
-        );
+        let accessibility_result = crate::pipeline::accessibility_audit::AccessibilityAuditService
+            .audit(
+                crate::pipeline::accessibility_audit::AccessibilityAuditInput {
+                    files: generated
+                        .iter()
+                        .map(|f| crate::pipeline::accessibility_audit::FileContent {
+                            path: f.path.clone(),
+                            content: f.content.clone(),
+                        })
+                        .collect(),
+                },
+            );
 
         let ux_consistency_result = crate::pipeline::ux_consistency::UXConsistencyService.audit(
             crate::pipeline::ux_consistency::UXConsistencyInput {
-                files: generated.iter().map(|f| crate::pipeline::ux_consistency::FileContent {
-                    path: f.path.clone(),
-                    content: f.content.clone(),
-                }).collect()
-            }
+                files: generated
+                    .iter()
+                    .map(|f| crate::pipeline::ux_consistency::FileContent {
+                        path: f.path.clone(),
+                        content: f.content.clone(),
+                    })
+                    .collect(),
+            },
         );
 
         let mut outcome = BuildOutcome {
@@ -927,20 +1029,39 @@ impl<'a> LocalPipelineEngine<'a> {
         let install_note = super::verifiers::install_step(root, consent);
         let stages: Vec<Box<dyn crate::pipeline::verify::VerificationStage + Send + Sync>> = vec![
             Box::new(DefaultVerificationStage),
-            Box::new(super::verifiers::SupervisedScriptStage::typecheck(consent, npm_version.clone())),
-            Box::new(super::verifiers::SupervisedScriptStage::bundle(consent, npm_version.clone())),
-            Box::new(super::verifiers::SupervisedScriptStage::tests(consent, npm_version)),
-            Box::new(super::verifiers::StartupBootStage::new(consent, node_version)),
+            Box::new(super::verifiers::SupervisedScriptStage::typecheck(
+                consent,
+                npm_version.clone(),
+            )),
+            Box::new(super::verifiers::SupervisedScriptStage::bundle(
+                consent,
+                npm_version.clone(),
+            )),
+            Box::new(super::verifiers::SupervisedScriptStage::tests(
+                consent,
+                npm_version,
+            )),
+            Box::new(super::verifiers::StartupBootStage::new(
+                consent,
+                node_version,
+            )),
         ];
-        let mut results: Vec<_> = verify_workspace(&stages, root, files).into_iter().map(|result| {
-            // Stages that ran supervised commands attach their own complete
-            // evidence; only wrap the plain in-process results.
-            if result.evidence.is_some() {
-                return result;
-            }
-            let status = if result.passed { GateStatus::Passed } else { GateStatus::Failed };
-            result.with_required_evidence(status, Some(true))
-        }).collect();
+        let mut results: Vec<_> = verify_workspace(&stages, root, files)
+            .into_iter()
+            .map(|result| {
+                // Stages that ran supervised commands attach their own complete
+                // evidence; only wrap the plain in-process results.
+                if result.evidence.is_some() {
+                    return result;
+                }
+                let status = if result.passed {
+                    GateStatus::Passed
+                } else {
+                    GateStatus::Failed
+                };
+                result.with_required_evidence(status, Some(true))
+            })
+            .collect();
         let mut summary = results
             .iter()
             .map(|result| format!("{}: {}", result.gate, result.detail))
@@ -951,7 +1072,6 @@ impl<'a> LocalPipelineEngine<'a> {
         }
         (results, summary)
     }
-
 }
 
 #[cfg(test)]
@@ -981,8 +1101,12 @@ mod verification_outcome_tests {
         let root = tempfile::tempdir().unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let (generated, failed, outcome) = engine.generate_project_files_with_provider_cancellable(
-            Some(root.path()), "build a page",
-            Ok((Arc::new(CancellingGateway(cancelled.clone())), "test-model".into())),
+            Some(root.path()),
+            "build a page",
+            Ok((
+                Arc::new(CancellingGateway(cancelled.clone())),
+                "test-model".into(),
+            )),
             &|| cancelled.load(Ordering::SeqCst),
         );
         // Scaffold files are written deterministically before the provider call,
@@ -990,7 +1114,10 @@ mod verification_outcome_tests {
         let scaffold_count = crate::pipeline::scaffolder::SCAFFOLD_PATHS.len();
         assert_eq!(generated.len(), scaffold_count);
         // Only source files (non-scaffold) fail when the provider cancels.
-        assert_eq!(failed.len(), crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count);
+        assert_eq!(
+            failed.len(),
+            crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count
+        );
         assert!(!outcome.success);
         // Source files are NOT written when the provider cancels.
         assert!(!root.path().join("README.md").exists());
@@ -1006,21 +1133,33 @@ mod verification_outcome_tests {
         let heal = crate::self_heal::DefaultSelfHealService;
         let engine = LocalPipelineEngine::new(&bus, &heal);
         let root = tempfile::tempdir().unwrap();
-        let failure = || crate::domain::DomainError::unavailable("RECODE_OPENAI_BASE_URL is not configured");
+        let failure =
+            || crate::domain::DomainError::unavailable("RECODE_OPENAI_BASE_URL is not configured");
 
         let (generated, failed, outcome) = engine.generate_project_files_with_provider(
-            Some(root.path()), "build a page", Err(failure()),
+            Some(root.path()),
+            "build a page",
+            Err(failure()),
         );
         // Scaffold files are generated deterministically (no provider needed).
         let scaffold_count = crate::pipeline::scaffolder::SCAFFOLD_PATHS.len();
         assert_eq!(generated.len(), scaffold_count);
         // Only source files fail when the provider is unavailable.
-        assert_eq!(failed.len(), crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count);
+        assert_eq!(
+            failed.len(),
+            crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count
+        );
         assert!(failed.iter().all(|file| {
             file.status == GeneratedFileStatus::Failed
-                && file.error.as_deref().is_some_and(|error| error.contains("RECODE_OPENAI_BASE_URL"))
+                && file
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("RECODE_OPENAI_BASE_URL"))
         }));
-        assert_eq!(outcome.failed_file_count, crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count);
+        assert_eq!(
+            outcome.failed_file_count,
+            crate::pipeline::manifest::VITE_PROJECT_FILES.len() - scaffold_count
+        );
         assert!(!outcome.success);
         assert!(outcome.degraded);
         assert!(outcome.summary.contains("RECODE_OPENAI_BASE_URL"));
@@ -1028,9 +1167,8 @@ mod verification_outcome_tests {
         // Scaffold files ARE on disk despite the provider failure.
         assert!(root.path().join("package.json").exists());
 
-        let (_, simulated_failures, _) = engine.generate_project_files_with_provider(
-            None, "build a page", Err(failure()),
-        );
+        let (_, simulated_failures, _) =
+            engine.generate_project_files_with_provider(None, "build a page", Err(failure()));
         assert!(simulated_failures.is_empty());
     }
 
@@ -1054,7 +1192,10 @@ mod verification_outcome_tests {
             accessibility: None,
             ux_consistency: None,
         };
-        apply_verification(&mut outcome, &[VerificationResult::failed("persistence", "missing file")]);
+        apply_verification(
+            &mut outcome,
+            &[VerificationResult::failed("persistence", "missing file")],
+        );
         assert!(!outcome.success);
         assert!(outcome.degraded);
         assert!(outcome.summary.contains("verification failed"));
@@ -1103,13 +1244,18 @@ mod http_generation_tests {
                 let mut socket = loop {
                     match listener.accept() {
                         Ok((socket, _)) => break socket,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
                             std::thread::sleep(Duration::from_millis(10));
                         }
                         Err(error) => panic!("provider request for {path} missing: {error}"),
                     }
                 };
-                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let mut bytes = Vec::new();
                 let header_end = loop {
                     let mut chunk = [0u8; 4096];
@@ -1122,19 +1268,33 @@ mod http_generation_tests {
                 };
                 let headers = String::from_utf8_lossy(&bytes[..header_end]);
                 assert!(headers.starts_with("POST /v1/chat/completions "));
-                let length: usize = headers.lines().find_map(|line| {
-                    line.to_ascii_lowercase().strip_prefix("content-length: ")?.trim().parse().ok()
-                }).unwrap();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")?
+                            .trim()
+                            .parse()
+                            .ok()
+                    })
+                    .unwrap();
                 while bytes.len() - header_end < length {
                     let mut chunk = [0u8; 4096];
                     let count = socket.read(&mut chunk).unwrap();
                     assert!(count > 0, "request ended before body");
                     bytes.extend_from_slice(&chunk[..count]);
                 }
-                let request: serde_json::Value = serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+                let request: serde_json::Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
                 assert_eq!(request["model"], "selected-model");
                 assert_eq!(request["stream"], false);
-                assert!(request["messages"][0]["content"].as_str().unwrap().contains(path), "request must mention {path}");
+                assert!(
+                    request["messages"][0]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains(path),
+                    "request must mention {path}"
+                );
 
                 let body = serde_json::json!({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}).to_string();
                 let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -1143,18 +1303,30 @@ mod http_generation_tests {
         });
 
         let adapter = Arc::new(OpenAICompatibleAdapter::new(&url, "selected-model", None).unwrap());
-        let gateway = Arc::new(DefaultGatewayService::new(adapter, CircuitBreakerConfig::default()));
+        let gateway = Arc::new(DefaultGatewayService::new(
+            adapter,
+            CircuitBreakerConfig::default(),
+        ));
         let (bus, _receiver) = EventBus::new();
         let heal = crate::self_heal::DefaultSelfHealService;
         let engine = LocalPipelineEngine::new(&bus, &heal);
         let root = tempfile::tempdir().unwrap();
         let (generated, failed, outcome) = engine.generate_project_files_with_provider(
-            Some(root.path()), "build a project", Ok((gateway, "selected-model".into())),
+            Some(root.path()),
+            "build a project",
+            Ok((gateway, "selected-model".into())),
         );
         server.join().unwrap();
         assert!(failed.is_empty(), "{failed:?}");
-        assert_eq!(generated.len(), crate::pipeline::manifest::VITE_PROJECT_FILES.len(), "all manifest files should be generated");
-        assert!(!outcome.success, "disk persistence alone is not a verified build: {outcome:?}");
+        assert_eq!(
+            generated.len(),
+            crate::pipeline::manifest::VITE_PROJECT_FILES.len(),
+            "all manifest files should be generated"
+        );
+        assert!(
+            !outcome.success,
+            "disk persistence alone is not a verified build: {outcome:?}"
+        );
         assert!(outcome.summary.contains("verification blocked"));
         let gates = outcome.verification_results.as_ref().unwrap();
         assert_eq!(gates.len(), REQUIRED_GATES.len());
@@ -1172,15 +1344,21 @@ mod http_generation_tests {
         }
         // Verify scaffold files have deterministic content and are valid.
         let pkg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("package.json")).unwrap()
-        ).unwrap();
+            &std::fs::read_to_string(root.path().join("package.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(pkg["private"], true);
         let tsconfig: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("tsconfig.json")).unwrap()
-        ).unwrap();
+            &std::fs::read_to_string(root.path().join("tsconfig.json")).unwrap(),
+        )
+        .unwrap();
         assert!(tsconfig["references"].is_array());
-        assert!(std::fs::read_to_string(root.path().join("vite.config.ts")).unwrap().contains("defineConfig"));
-        assert!(std::fs::read_to_string(root.path().join(".gitignore")).unwrap().contains("node_modules/"));
+        assert!(std::fs::read_to_string(root.path().join("vite.config.ts"))
+            .unwrap()
+            .contains("defineConfig"));
+        assert!(std::fs::read_to_string(root.path().join(".gitignore"))
+            .unwrap()
+            .contains("node_modules/"));
     }
 
     struct RejectingGateway;
@@ -1216,9 +1394,7 @@ mod http_generation_tests {
             .cloned()
             .collect();
         std::fs::create_dir_all(root.path().join("src")).unwrap();
-        let seed_content = |path: &str| -> String {
-            format!("content of {path}\n")
-        };
+        let seed_content = |path: &str| -> String { format!("content of {path}\n") };
         for path in &all_paths {
             std::fs::write(root.path().join(path), seed_content(path)).unwrap();
         }
@@ -1234,8 +1410,13 @@ mod http_generation_tests {
                 (path.clone(), sha)
             })
             .collect();
-        crate::pipeline::ledger::store_ledger(root.path(), LEDGER_PROJECT_ID, &inputs_hash, &written)
-            .unwrap();
+        crate::pipeline::ledger::store_ledger(
+            root.path(),
+            LEDGER_PROJECT_ID,
+            &inputs_hash,
+            &written,
+        )
+        .unwrap();
 
         // Second run: source files must be reused without contacting the
         // provider, which would panic inside RejectingGateway.
@@ -1258,15 +1439,23 @@ mod http_generation_tests {
             .map(|file| file.path.as_str())
             .collect();
         assert_eq!(reused.len(), source_paths.len());
-        assert!(reused.iter().all(|path| source_paths.contains(&path.to_string())));
+        assert!(reused
+            .iter()
+            .all(|path| source_paths.contains(&path.to_string())));
         // Scaffold files are Written (deterministic).
         let written_files: Vec<_> = generated
             .iter()
             .filter(|file| file.status == GeneratedFileStatus::Written)
             .map(|file| file.path.as_str())
             .collect();
-        assert_eq!(written_files.len(), crate::pipeline::scaffolder::SCAFFOLD_PATHS.len());
-        assert!(!outcome.success, "persistence gate alone still does not make a verified build");
+        assert_eq!(
+            written_files.len(),
+            crate::pipeline::scaffolder::SCAFFOLD_PATHS.len()
+        );
+        assert!(
+            !outcome.success,
+            "persistence gate alone still does not make a verified build"
+        );
         assert!(outcome.summary.contains("verification blocked"));
 
         // A drifted file must regenerate: tamper with one file and rerun with
@@ -1289,7 +1478,9 @@ mod http_generation_tests {
                     Err(error) => panic!("regeneration request missing: {error}"),
                 }
             };
-            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut bytes = Vec::new();
             let header_end = loop {
                 let mut chunk = [0u8; 4096];
@@ -1309,7 +1500,10 @@ mod http_generation_tests {
             socket.write_all(response.as_bytes()).unwrap();
         });
         let adapter = Arc::new(OpenAICompatibleAdapter::new(&url, "selected-model", None).unwrap());
-        let gateway = Arc::new(DefaultGatewayService::new(adapter, CircuitBreakerConfig::default()));
+        let gateway = Arc::new(DefaultGatewayService::new(
+            adapter,
+            CircuitBreakerConfig::default(),
+        ));
         let (generated, failed, _outcome) = engine.generate_project_files_with_provider(
             Some(root.path()),
             "build a project",
@@ -1332,7 +1526,7 @@ mod http_generation_tests {
         // Scaffold files are Written (deterministic, regenerated each run).
         let scaffold_count = crate::pipeline::scaffolder::SCAFFOLD_PATHS.len();
         assert_eq!(written.len(), scaffold_count + 1); // scaffold + App.css
-        // Source files minus App.css are reused.
+                                                       // Source files minus App.css are reused.
         assert_eq!(reused.len(), source_paths.len() - 1);
         assert_eq!(
             std::fs::read_to_string(root.path().join("src/App.css")).unwrap(),
@@ -1391,9 +1585,7 @@ mod checkpoint_resume_tests {
             remaining: AtomicUsize::new(source_count),
             requests: first_requests.clone(),
         });
-        let should_cancel = move || {
-            checks.fetch_add(1, Ordering::SeqCst) + 1 >= cancel_at
-        };
+        let should_cancel = move || checks.fetch_add(1, Ordering::SeqCst) + 1 >= cancel_at;
 
         let (generated, failed, outcome) = engine.generate_project_files_with_provider_cancellable(
             Some(root.path()),
@@ -1410,15 +1602,23 @@ mod checkpoint_resume_tests {
 
         // The checkpoint durably records the partial progress and the
         // cancellation, so the next run can resume from it.
-        let checkpoint = crate::pipeline::checkpoint::load_checkpoint(
-            root.path(),
-            LEDGER_PROJECT_ID,
-        )
-        .expect("checkpoint must persist after a cancelled partial run");
-        assert_eq!(checkpoint.status, crate::pipeline::checkpoint::CheckpointStatus::Cancelled);
-        assert_eq!(checkpoint.files.len(), 1, "exactly one file should be checkpointed");
+        let checkpoint =
+            crate::pipeline::checkpoint::load_checkpoint(root.path(), LEDGER_PROJECT_ID)
+                .expect("checkpoint must persist after a cancelled partial run");
+        assert_eq!(
+            checkpoint.status,
+            crate::pipeline::checkpoint::CheckpointStatus::Cancelled
+        );
+        assert_eq!(
+            checkpoint.files.len(),
+            1,
+            "exactly one file should be checkpointed"
+        );
         let resumed_path = checkpoint.files[0].path.clone();
-        assert!(root.path().join(&resumed_path).exists(), "checkpointed file must be on disk");
+        assert!(
+            root.path().join(&resumed_path).exists(),
+            "checkpointed file must be on disk"
+        );
 
         // Resume run: the checkpointed file must not re-bill the provider, so
         // the gateway only budgets the remaining source files.
@@ -1494,9 +1694,7 @@ mod post_generation_validation_tests {
 
     impl GatewayService for ScriptedGateway {
         fn send(&self, request: GatewayRequest) -> Result<GatewayResponse> {
-            let messages = request.payload["messages"]
-                .as_array()
-                .expect("messages");
+            let messages = request.payload["messages"].as_array().expect("messages");
             // The system prompt names the file: "File: {path}\nPurpose: ..."
             let system = messages[0]["content"].as_str().expect("system content");
             let file_path = system
@@ -1556,8 +1754,9 @@ mod post_generation_validation_tests {
         assert_eq!(generated.len(), file_count);
         // The scaffold package.json overwrote the malformed seed with valid JSON.
         let pkg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("package.json")).unwrap()
-        ).expect("scaffold package.json must be valid JSON");
+            &std::fs::read_to_string(root.path().join("package.json")).unwrap(),
+        )
+        .expect("scaffold package.json must be valid JSON");
         assert_eq!(pkg["private"], true);
         assert!(!outcome.success); // persistence alone doesn't verify
     }
@@ -1595,8 +1794,9 @@ mod post_generation_validation_tests {
             file_count
         );
         let pkg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("package.json")).unwrap()
-        ).unwrap();
+            &std::fs::read_to_string(root.path().join("package.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(pkg["private"], true);
         let ledger = crate::pipeline::ledger::load_ledger(root.path(), LEDGER_PROJECT_ID)
             .expect("clean run must store the ledger");

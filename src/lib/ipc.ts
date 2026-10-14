@@ -1056,6 +1056,43 @@ export type OrchestratorStepResult = {
   error: string | null;
 };
 
+export type ConcurrentLimitRecord = {
+  modelId: string;
+  limit: number;
+};
+
+export type KeyStatusRecord = {
+  provider: string;
+  status: string;
+  message: string;
+  checkedAtMs: number;
+};
+
+export type SelectionState = {
+  selectedModels: string[];
+  disabledProviders: string[];
+  concurrencyLimits: ConcurrentLimitRecord[];
+  providerVerification: KeyStatusRecord[];
+};
+
+export type KeyVerificationResult = {
+  provider: string;
+  status: string;
+  message: string;
+  modelCount: number;
+  checkedAtMs: number;
+};
+
+export type ConcurrencyCalibrationResult = {
+  provider: string;
+  modelId: string;
+  ok: boolean;
+  limit: number;
+  levelsTested: number;
+  stoppedReason: string;
+  checkedAtMs: number;
+};
+
 export async function listModels(provider?: string): Promise<ModelInfo[]> {
   return invokeCommand<ModelInfo[]>('list_models', { provider: provider ?? null });
 }
@@ -1100,6 +1137,32 @@ export async function saveProviderApiKey(
 
 export async function deleteProviderApiKey(provider: string): Promise<boolean> {
   return invokeCommand<boolean>('delete_provider_api_key', { provider });
+}
+
+export async function verifyProviderKey(provider: string): Promise<KeyVerificationResult> {
+  return invokeCommand<KeyVerificationResult>('verify_provider_key', { provider });
+}
+
+export async function calibrateModelConcurrency(
+  provider: string,
+  modelId: string,
+): Promise<ConcurrencyCalibrationResult> {
+  return invokeCommand<ConcurrencyCalibrationResult>('calibrate_model_concurrency', {
+    provider,
+    modelId,
+  });
+}
+
+export async function getSelectionState(): Promise<SelectionState> {
+  return invokeCommand<SelectionState>('get_selection_state');
+}
+
+export async function setModelSelected(modelId: string, selected: boolean): Promise<SelectionState> {
+  return invokeCommand<SelectionState>('set_model_selected', { modelId, selected });
+}
+
+export async function setProviderEnabled(provider: string, enabled: boolean): Promise<SelectionState> {
+  return invokeCommand<SelectionState>('set_provider_enabled', { provider, enabled });
 }
 
 export async function routeModels(input: {

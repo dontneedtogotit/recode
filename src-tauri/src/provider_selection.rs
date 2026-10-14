@@ -82,6 +82,10 @@ pub struct ProviderSelectionEngine {
     selection_history: Vec<ProviderSelectionRecord>,
     round_robin_cursor: usize,
     in_flight: HashMap<String, usize>,
+    /// Per-provider overrides of `config.max_in_flight_per_provider`, set from
+    /// calibrated concurrency limits. An unset provider falls back to the
+    /// configured default cap.
+    max_in_flight_overrides: HashMap<String, usize>,
 }
 
 impl ProviderSelectionEngine {
@@ -93,19 +97,46 @@ impl ProviderSelectionEngine {
             selection_history: Vec::new(),
             round_robin_cursor: 0,
             in_flight: HashMap::new(),
+            max_in_flight_overrides: HashMap::new(),
         }
     }
 
+    /// Override a provider's in-flight cap (e.g. from a calibrated concurrency
+    /// limit). Passing `None` clears any override, reverting to the default.
+    pub fn set_max_in_flight_override(&mut self, provider_id: &str, limit: Option<usize>) {
+        match limit {
+            Some(limit) if limit > 0 => {
+                self.max_in_flight_overrides
+                    .insert(provider_id.into(), limit);
+            }
+            _ => {
+                self.max_in_flight_overrides.remove(provider_id);
+            }
+        }
+    }
+
+    /// The effective in-flight cap for a provider: its calibrated override if
+    /// set, else the configured default.
+    pub fn effective_in_flight_cap(&self, provider_id: &str) -> usize {
+        self.max_in_flight_overrides
+            .get(provider_id)
+            .copied()
+            .unwrap_or(self.config.max_in_flight_per_provider)
+    }
+
     pub fn register_provider(&mut self, capabilities: ProviderCapabilities) {
-        self.capabilities.insert(capabilities.id.clone(), capabilities.clone());
-        self.health.entry(capabilities.id.clone()).or_insert_with(|| ProviderHealthRecord {
-            provider_id: capabilities.id,
-            status: ProviderHealthStatus::Unknown,
-            consecutive_failures: 0,
-            last_failure: None,
-            last_success: None,
-            cooldown_until: None,
-        });
+        self.capabilities
+            .insert(capabilities.id.clone(), capabilities.clone());
+        self.health
+            .entry(capabilities.id.clone())
+            .or_insert_with(|| ProviderHealthRecord {
+                provider_id: capabilities.id,
+                status: ProviderHealthStatus::Unknown,
+                consecutive_failures: 0,
+                last_failure: None,
+                last_success: None,
+                cooldown_until: None,
+            });
     }
 
     pub fn update_health(&mut self, provider_id: &str, status: ProviderHealthStatus) {
@@ -125,7 +156,10 @@ impl ProviderSelectionEngine {
             if succeeded {
                 record.consecutive_failures = 0;
                 record.last_success = Some(chrono_now());
-                if matches!(record.status, ProviderHealthStatus::Unhealthy | ProviderHealthStatus::Degraded) {
+                if matches!(
+                    record.status,
+                    ProviderHealthStatus::Unhealthy | ProviderHealthStatus::Degraded
+                ) {
                     record.status = ProviderHealthStatus::Degraded;
                 }
             } else {
@@ -174,7 +208,11 @@ impl ProviderSelectionEngine {
                             .as_ref()
                             .map(|task_type| capabilities.preferred_task_types.contains(task_type))
                             .unwrap_or(false);
-                        if matched { 0 } else { 1 }
+                        if matched {
+                            0
+                        } else {
+                            1
+                        }
                     })
                     .unwrap_or(usize::MAX)
             }),
@@ -193,7 +231,7 @@ impl ProviderSelectionEngine {
 
     pub fn begin_request(&mut self, provider_id: &str) -> bool {
         let current = self.in_flight.get(provider_id).copied().unwrap_or(0);
-        if current >= self.config.max_in_flight_per_provider {
+        if current >= self.effective_in_flight_cap(provider_id) {
             return false;
         }
         self.in_flight.insert(provider_id.into(), current + 1);
@@ -210,11 +248,15 @@ impl ProviderSelectionEngine {
     }
 
     pub fn health_status(&self, provider_id: &str) -> Option<ProviderHealthStatus> {
-        self.health.get(provider_id).map(|record| record.status.clone())
+        self.health
+            .get(provider_id)
+            .map(|record| record.status.clone())
     }
 
     pub fn consecutive_failures(&self, provider_id: &str) -> Option<u32> {
-        self.health.get(provider_id).map(|record| record.consecutive_failures)
+        self.health
+            .get(provider_id)
+            .map(|record| record.consecutive_failures)
     }
 
     pub fn registered_providers(&self) -> Vec<String> {
@@ -240,7 +282,11 @@ impl ProviderSelectionEngine {
             eligible.retain(|provider_id| {
                 self.capabilities
                     .get(provider_id)
-                    .map(|capabilities| capabilities.preferred_task_types.contains(&task_type.to_string()))
+                    .map(|capabilities| {
+                        capabilities
+                            .preferred_task_types
+                            .contains(&task_type.to_string())
+                    })
                     .unwrap_or(false)
             });
         }
@@ -409,6 +455,9 @@ mod tests {
         let mut engine = engine_with_providers(SelectionStrategy::Priority);
         engine.record_outcome("primary", false, None, None);
         engine.reset();
-        assert_eq!(engine.health_status("primary"), Some(ProviderHealthStatus::Unknown));
+        assert_eq!(
+            engine.health_status("primary"),
+            Some(ProviderHealthStatus::Unknown)
+        );
     }
 }

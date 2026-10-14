@@ -19,11 +19,12 @@
 //! [`ModelCatalog`] via `record_latency`, so routing gets sharper over time.
 //!
 //! Synchronous to match the crate.
-use crate::agent_runtime::{AgentRuntime, AgentTask, AgentResult};
+use crate::agent_runtime::{AgentResult, AgentRuntime, AgentTask};
 use crate::domain::{DomainError, EntityId, Result};
-use crate::event_bus::{DomainEvent, EventBus, TOPIC_STEP_STARTED, TOPIC_STEP_COMPLETED};
+use crate::event_bus::{DomainEvent, EventBus, TOPIC_STEP_COMPLETED, TOPIC_STEP_STARTED};
 use crate::model_catalog::{ModelCatalog, TaskKind};
 use crate::model_router::{infer_request, ModelRouter};
+use crate::model_selection::{route_candidates, SelectionState};
 use std::sync::Arc;
 
 /// The orchestrator's single decision: one agent, one model, one task.
@@ -61,6 +62,7 @@ pub trait NextActionAdvisor {
         step_description: &str,
         catalog: &ModelCatalog,
         router: &ModelRouter,
+        selection: &SelectionState,
     ) -> OrchestratorDecision;
 
     /// Decide whether `goal` is complete given the work done so far. Each
@@ -98,39 +100,39 @@ impl NextActionAdvisor for HeuristicAdvisor {
         step_description: &str,
         catalog: &ModelCatalog,
         router: &ModelRouter,
+        selection: &SelectionState,
     ) -> OrchestratorDecision {
         let request = infer_request(step_description);
         let agent_id = agent_role_for(step_description).to_string();
 
-        // Only route among models the user has actually selected / that are
-        // eligible; fall back to the whole catalog if none qualify.
-        let candidates = catalog.all();
-        let decision = router.route(&candidates, &request);
+        // Only route among models the user has actually selected / whose
+        // provider is enabled; `route_candidates` falls back to the whole
+        // catalog when nothing is selected and nothing is disabled.
+        let candidates = route_candidates(selection, &catalog.all());
+        let decision = router.route_live_filtered(catalog, &candidates, &request);
         let model_id = decision
             .chosen
             .as_ref()
             .map(|c| c.model_id.clone())
             .or_else(|| {
                 // No fully-eligible model: relax to the top-ranked candidate.
-                decision
-                    .ranked
-                    .first()
-                    .map(|c| c.model_id.clone())
+                decision.ranked.first().map(|c| c.model_id.clone())
             });
 
         let rationale = match &decision.chosen {
             Some(c) => format!(
                 "{}: {} (score {:.3}, affinity {:.2})",
-                agent_id,
-                c.model_id,
-                c.score,
-                c.affinity
+                agent_id, c.model_id, c.score, c.affinity
             ),
             None => format!("{agent_id}: no eligible model; using heuristic fallback"),
         };
 
         let mut task_description = step_description.to_string();
-        if !goal.is_empty() && !task_description.to_lowercase().contains(&goal.to_lowercase()) {
+        if !goal.is_empty()
+            && !task_description
+                .to_lowercase()
+                .contains(&goal.to_lowercase())
+        {
             task_description = format!("[Goal: {goal}] {step_description}");
         }
 
@@ -256,6 +258,7 @@ impl NextActionAdvisor for GatewayAdvisor {
         step_description: &str,
         catalog: &ModelCatalog,
         router: &ModelRouter,
+        selection: &SelectionState,
     ) -> OrchestratorDecision {
         if let Some(llm) = self.try_llm(goal, step_description) {
             // Validate the LLM's model choice against the catalog; if it
@@ -268,7 +271,9 @@ impl NextActionAdvisor for GatewayAdvisor {
             if model_ok {
                 return llm;
             }
-            let mut heuristic = self.fallback.advise(goal, step_description, catalog, router);
+            let mut heuristic =
+                self.fallback
+                    .advise(goal, step_description, catalog, router, selection);
             heuristic.rationale = format!(
                 "LLM chose unknown model '{}'; fell back to routed model",
                 llm.model_id.as_deref().unwrap_or("?")
@@ -276,7 +281,8 @@ impl NextActionAdvisor for GatewayAdvisor {
             return heuristic;
         }
         // No gateway / failed call / unparseable: pure heuristic.
-        self.fallback.advise(goal, step_description, catalog, router)
+        self.fallback
+            .advise(goal, step_description, catalog, router, selection)
     }
 }
 
@@ -313,8 +319,10 @@ impl DynamicOrchestrator {
         goal: &str,
         step_description: &str,
         catalog: &ModelCatalog,
+        selection: &SelectionState,
     ) -> OrchestratorDecision {
-        self.advisor.advise(goal, step_description, catalog, &self.router)
+        self.advisor
+            .advise(goal, step_description, catalog, &self.router, selection)
     }
 
     /// Decide, dispatch through `runtime`, feed learning back into
@@ -325,11 +333,12 @@ impl DynamicOrchestrator {
         goal: &str,
         step_description: &str,
         catalog: &ModelCatalog,
+        selection: &SelectionState,
         runtime: &dyn AgentRuntime,
         bus: Option<&EventBus>,
         run_id: &str,
     ) -> (Result<AgentResult, DomainError>, OrchestratorDecision) {
-        let decision = self.decide(goal, step_description, catalog);
+        let decision = self.decide(goal, step_description, catalog, selection);
         let task_id = EntityId::new();
 
         if let Some(bus) = bus {
@@ -395,6 +404,7 @@ impl DynamicOrchestrator {
         initial_step: &str,
         max_steps: usize,
         catalog: &ModelCatalog,
+        selection: &SelectionState,
         runtime: &dyn AgentRuntime,
         bus: Option<&EventBus>,
         run_id: &str,
@@ -424,7 +434,8 @@ impl DynamicOrchestrator {
                     .to_string();
             }
 
-            let (result, decision) = self.dispatch(goal, &current, catalog, runtime, bus, run_id);
+            let (result, decision) =
+                self.dispatch(goal, &current, catalog, selection, runtime, bus, run_id);
             let summary = match &result {
                 Ok(r) => {
                     let text = match &r.output {
@@ -432,10 +443,20 @@ impl DynamicOrchestrator {
                         other => other.to_string(),
                     };
                     if r.success {
-                        format!("step {} ({}) succeeded: {}", i + 1, decision.agent_id, truncate(&text, 500))
+                        format!(
+                            "step {} ({}) succeeded: {}",
+                            i + 1,
+                            decision.agent_id,
+                            truncate(&text, 500)
+                        )
                     } else {
                         let err = r.error.clone().unwrap_or_else(|| "unknown error".into());
-                        format!("step {} ({}) FAILED: {}", i + 1, decision.agent_id, truncate(&err, 500))
+                        format!(
+                            "step {} ({}) FAILED: {}",
+                            i + 1,
+                            decision.agent_id,
+                            truncate(&err, 500)
+                        )
                     }
                 }
                 Err(e) => format!("step {} ({}) errored: {}", i + 1, decision.agent_id, e),
@@ -486,7 +507,7 @@ pub struct OrchestratorRunReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_catalog::{CostTier, ModelInfo, Modality};
+    use crate::model_catalog::{CostTier, Modality, ModelInfo};
 
     fn seed_catalog() -> ModelCatalog {
         let catalog = ModelCatalog::new();
@@ -562,8 +583,9 @@ mod tests {
             step_description: &str,
             catalog: &ModelCatalog,
             router: &ModelRouter,
+            selection: &SelectionState,
         ) -> OrchestratorDecision {
-            HeuristicAdvisor.advise(goal, step_description, catalog, router)
+            HeuristicAdvisor.advise(goal, step_description, catalog, router, selection)
         }
         fn goal_completed(&self, _goal: &str, history: &[(String, String)]) -> bool {
             history.len() >= self.after
@@ -577,8 +599,16 @@ mod tests {
         let runtime = RecordingRuntime {
             calls: std::sync::Mutex::new(Vec::new()),
         };
-        let report =
-            orch.run_until_done("ship it", "start", 3, &catalog, &runtime, None, "run-1");
+        let report = orch.run_until_done(
+            "ship it",
+            "start",
+            3,
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            None,
+            "run-1",
+        );
         assert!(!report.completed);
         assert!(report.aborted);
         assert_eq!(report.steps.len(), 3);
@@ -592,8 +622,16 @@ mod tests {
         let runtime = RecordingRuntime {
             calls: std::sync::Mutex::new(Vec::new()),
         };
-        let report =
-            orch.run_until_done("ship it", "start", 10, &catalog, &runtime, None, "run-1");
+        let report = orch.run_until_done(
+            "ship it",
+            "start",
+            10,
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            None,
+            "run-1",
+        );
         assert!(report.completed);
         assert!(!report.aborted);
         // 2 steps executed, then the completion check stops the loop.
@@ -605,8 +643,16 @@ mod tests {
         let catalog = seed_catalog();
         let orch = DynamicOrchestrator::default();
         let runtime = FailingRuntime;
-        let report =
-            orch.run_until_done("ship it", "start", 5, &catalog, &runtime, None, "run-1");
+        let report = orch.run_until_done(
+            "ship it",
+            "start",
+            5,
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            None,
+            "run-1",
+        );
         assert!(report.aborted);
         assert!(!report.completed);
         assert_eq!(report.steps.len(), 1);
@@ -620,7 +666,16 @@ mod tests {
         let runtime = RecordingRuntime {
             calls: std::sync::Mutex::new(Vec::new()),
         };
-        let report = orch.run_until_done("  ", "start", 3, &catalog, &runtime, None, "run-1");
+        let report = orch.run_until_done(
+            "  ",
+            "start",
+            3,
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            None,
+            "run-1",
+        );
         assert!(report.steps.is_empty());
         assert!(!report.completed && !report.aborted);
     }
@@ -629,7 +684,12 @@ mod tests {
     fn heuristic_routes_coding_step_to_a_coder() {
         let catalog = seed_catalog();
         let orch = DynamicOrchestrator::default();
-        let decision = orch.decide("build a REST service", "Implement the user endpoint", &catalog);
+        let decision = orch.decide(
+            "build a REST service",
+            "Implement the user endpoint",
+            &catalog,
+            &SelectionState::default(),
+        );
         assert_eq!(decision.agent_id, "executor");
         assert_eq!(decision.task_kind, TaskKind::Coding);
         // The high-affinity coder should be picked for a coding step.
@@ -640,7 +700,12 @@ mod tests {
     fn heuristic_maps_phase_to_reviewer() {
         let catalog = seed_catalog();
         let orch = DynamicOrchestrator::default();
-        let decision = orch.decide("build a REST service", "Review the diff for correctness", &catalog);
+        let decision = orch.decide(
+            "build a REST service",
+            "Review the diff for correctness",
+            &catalog,
+            &SelectionState::default(),
+        );
         assert_eq!(decision.agent_id, "reviewer");
     }
 
@@ -648,7 +713,12 @@ mod tests {
     fn heuristic_maps_analysis_to_planner() {
         let catalog = seed_catalog();
         let orch = DynamicOrchestrator::default();
-        let decision = orch.decide("build a REST service", "Analyze the goal and design the API", &catalog);
+        let decision = orch.decide(
+            "build a REST service",
+            "Analyze the goal and design the API",
+            &catalog,
+            &SelectionState::default(),
+        );
         assert_eq!(decision.agent_id, "planner");
     }
 
@@ -659,8 +729,15 @@ mod tests {
         let runtime = RecordingRuntime {
             calls: std::sync::Mutex::new(Vec::new()),
         };
-        let (result, decision) =
-            orch.dispatch("goal", "Implement the login endpoint", &catalog, &runtime, None, "run-1");
+        let (result, decision) = orch.dispatch(
+            "goal",
+            "Implement the login endpoint",
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            None,
+            "run-1",
+        );
         assert!(result.unwrap().success);
         assert_eq!(decision.agent_id, "executor");
         assert_eq!(runtime.calls.lock().unwrap().len(), 1);
@@ -674,11 +751,16 @@ mod tests {
             calls: std::sync::Mutex::new(Vec::new()),
         };
         let (bus, receiver) = EventBus::new();
-        orch.dispatch("goal", "Implement the login endpoint", &catalog, &runtime, Some(&bus), "run-1");
-        let mut topics: Vec<String> = receiver
-            .try_iter()
-            .map(|e| e.topic)
-            .collect();
+        orch.dispatch(
+            "goal",
+            "Implement the login endpoint",
+            &catalog,
+            &SelectionState::default(),
+            &runtime,
+            Some(&bus),
+            "run-1",
+        );
+        let mut topics: Vec<String> = receiver.try_iter().map(|e| e.topic).collect();
         // We expect at least the started + completed events.
         assert!(
             topics.contains(&TOPIC_STEP_STARTED.to_string()),
@@ -701,7 +783,12 @@ mod tests {
             fallback: Arc::new(HeuristicAdvisor),
         };
         let orch = DynamicOrchestrator::new(advisor);
-        let decision = orch.decide("goal", "Implement the login endpoint", &catalog);
+        let decision = orch.decide(
+            "goal",
+            "Implement the login endpoint",
+            &catalog,
+            &SelectionState::default(),
+        );
         assert_eq!(decision.agent_id, "executor");
         assert!(decision.model_id.is_some());
     }
