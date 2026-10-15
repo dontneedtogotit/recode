@@ -1,21 +1,17 @@
-use super::outcome::{evaluate_required_gates, GateDecision, REQUIRED_GATES};
+use super::outcome::{evaluate_required_gates, GateDecision};
 use crate::domain::Result;
-use crate::event_bus::{now_millis, DomainEvent, EventBus};
+use crate::event_bus::EventBus;
 use crate::pipeline::ledger::LEDGER_PROJECT_ID;
 use crate::pipeline::types::{
     BuildOutcome, FileGenerationPrompt, GeneratedFile, GeneratedFileStatus,
     LocalFileGenerationService,
 };
 use crate::pipeline::verify::{
-    verify_workspace, DefaultVerificationStage, GateStatus, VerificationResult,
+    verify_workspace, DefaultVerificationStage, GateStatus,
 };
-use crate::pipeline::{PipelineInput, PipelineRun};
-use crate::planner::{Plan, PlanStep, Planner, StepProgress};
-use crate::runtime_monitor::MonitorEvent;
-use crate::self_heal::{RepairAction, SelfHealService};
+use crate::self_heal::SelfHealService;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn apply_verification(
@@ -89,158 +85,6 @@ impl<'a> LocalPipelineEngine<'a> {
             self_heal,
             execution_consent: Default::default(),
         }
-    }
-
-    pub fn run_with_cancellation(
-        &self,
-        input: PipelineInput,
-        cancel: Option<&AtomicBool>,
-        planner: &dyn Fn(&str) -> Result<Plan>,
-        runtime: &dyn Fn(
-            &mut Plan,
-            &mut dyn FnMut(&PlanStep, StepProgress) -> bool,
-            &AtomicBool,
-        ) -> Result<(), String>,
-    ) -> Result<PipelineRun> {
-        // Access progress tracker from global app state
-        let progress_tracker = &crate::app_state::AppState::global().progress_tracker;
-        let _cancel_token = if let Some(project_id) = &input.project_id {
-            progress_tracker.register_active_build(project_id.to_string())
-        } else {
-            Arc::new(AtomicBool::new(false))
-        };
-
-        let result = self.run_internal(input.clone(), cancel, planner, runtime);
-
-        if let Some(project_id) = &input.project_id {
-            progress_tracker.cleanup_active_build(project_id);
-        }
-
-        result
-    }
-
-    fn run_internal(
-        &self,
-        input: PipelineInput,
-        cancel: Option<&AtomicBool>,
-        planner: &dyn Fn(&str) -> Result<Plan>,
-        runtime: &dyn Fn(
-            &mut Plan,
-            &mut dyn FnMut(&PlanStep, StepProgress) -> bool,
-            &AtomicBool,
-        ) -> Result<(), String>,
-    ) -> Result<PipelineRun> {
-        let mut plan = planner(&input.goal).map_err(|e| {
-            if input.emit_events {
-                self.event_bus.publish(DomainEvent {
-                    topic: "plan.failed".into(),
-                    payload: serde_json::json!({ "goal": input.goal, "error": e.to_string() }),
-                });
-            }
-            e
-        })?;
-
-        if input.emit_events {
-            self.event_bus.publish(DomainEvent {
-                topic: "plan.created".into(),
-                payload: serde_json::json!({ "plan_id": plan.id.as_str(), "goal": plan.goal }),
-            });
-        }
-
-        let mut events = Vec::new();
-        let mut report_step = |step: &PlanStep, progress: StepProgress| -> bool {
-            if cancel.map(|t| t.load(Ordering::SeqCst)).unwrap_or(false) {
-                return false;
-            }
-            if !input.emit_events {
-                return true;
-            }
-            let topic = match progress {
-                StepProgress::Started => "step.started",
-                StepProgress::Completed => "step.completed",
-            };
-            self.event_bus.publish(DomainEvent {
-                topic: topic.into(),
-                payload: serde_json::json!({
-                    "step_id": step.id.as_str(),
-                    "description": step.description,
-                }),
-            });
-            events.push(MonitorEvent {
-                ts: now_millis().to_string(),
-                severity: "info".into(),
-                message: format!("{}: {}", topic, step.description),
-            });
-            true
-        };
-
-        let runtime_result = runtime(
-            &mut plan,
-            &mut report_step,
-            cancel.unwrap_or(&AtomicBool::new(false)),
-        );
-        if runtime_result.is_err() {
-            plan.status = crate::planner::PlanStatus::Failed;
-            return Err(crate::domain::DomainError::internal(
-                "pipeline execution failed",
-            ));
-        }
-
-        let manifest_service = crate::pipeline::manifest::LocalGenerationManifestService::new();
-        let mut manifest = manifest_service.build(&input.run_id, &input)?;
-
-        let prompt_service = crate::pipeline::prompts::LocalPromptBuilderService::new();
-        let prompts = prompt_service.build(&manifest)?;
-
-        let generator = crate::pipeline::generator::LocalFileGeneratorService::new();
-        for prompt in prompts {
-            if let Err(error) = generator.generate(&mut manifest, &prompt) {
-                manifest_service.mark_failed(&mut manifest, &prompt.file_path, error.to_string());
-                if input.emit_events {
-                    self.event_bus.publish(DomainEvent {
-                        topic: "plan.failed".into(),
-                        payload: serde_json::json!({ "file": prompt.file_path, "error": error.to_string() }),
-                    });
-                }
-            }
-        }
-
-        plan.status = crate::planner::PlanStatus::Completed;
-        if input.emit_events {
-            self.event_bus.publish(DomainEvent {
-                topic: "plan.completed".into(),
-                payload: serde_json::json!({ "plan_id": plan.id.as_str(), "steps": plan.steps.len() }),
-            });
-            events.push(MonitorEvent {
-                ts: now_millis().to_string(),
-                severity: "info".into(),
-                message: format!("plan {} completed", plan.id),
-            });
-        }
-
-        let repair_actions = self
-            .self_heal
-            .attempt_repair(&events)
-            .map_err(|e| crate::domain::DomainError::internal(e.to_string()))?;
-
-        let (generated_files, failed_files, outcome) =
-            self.generate_project_files(None, input.goal.as_str());
-        let verification_results = outcome.verification_results.clone();
-        let repair_results = outcome.repair_results.clone();
-        let verification_summary = outcome.verification_summary.clone();
-        Ok(PipelineRun {
-            plan,
-            repair_actions,
-            events,
-            run_id: input.run_id,
-            execution_context: None,
-            generated_files,
-            failed_files,
-            outcome: Some(outcome),
-            verification_results,
-            repair_results,
-            verification_summary,
-        })
     }
 
     pub fn generate_project_files(
@@ -1046,7 +890,7 @@ impl<'a> LocalPipelineEngine<'a> {
                 node_version,
             )),
         ];
-        let mut results: Vec<_> = verify_workspace(&stages, root, files)
+        let results: Vec<_> = verify_workspace(&stages, root, files)
             .into_iter()
             .map(|result| {
                 // Stages that ran supervised commands attach their own complete
@@ -1076,6 +920,8 @@ impl<'a> LocalPipelineEngine<'a> {
 
 #[cfg(test)]
 mod verification_outcome_tests {
+    use crate::pipeline::outcome::REQUIRED_GATES;
+    use std::sync::atomic::Ordering;
     use super::*;
     use crate::gateway::{GatewayRequest, GatewayResponse, GatewayService};
     use crate::pipeline::verify::VerificationResult;
@@ -1205,6 +1051,7 @@ mod verification_outcome_tests {
 #[cfg(test)]
 mod http_generation_tests {
     use super::*;
+    use crate::pipeline::outcome::REQUIRED_GATES;
     use crate::gateway::{CircuitBreakerConfig, DefaultGatewayService, OpenAICompatibleAdapter};
     use std::io::{Read, Write};
     use std::net::TcpListener;

@@ -20,7 +20,6 @@ use crate::self_heal::DefaultSelfHealService;
 
 pub mod engine;
 mod manifest;
-mod generator;
 mod prompts;
 mod generation_errors;
 mod ledger;
@@ -606,29 +605,11 @@ mod tests {
         assert_eq!(run.plan.status, PlanStatus::Completed);
         assert_eq!(run.run_id, "run-1");
 
-        let engine = crate::pipeline::engine::LocalPipelineEngine::new(&event_bus, &DefaultSelfHealService);
-        let engine_run = engine
-            .run_with_cancellation(
-                PipelineInput {
-                    goal: "build landing page".into(),
-                    emit_events: true,
-                    run_id: "run-1".into(),
-                    project_id: None,
-                    execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-                },
-                None,
-                &|_goal| planner.create_plan("build landing page"),
-                &|plan, _progress, _cancel| {
-                    planner.execute_plan(plan, &LocalAgentRuntime);
-                    Ok(())
-                },
-            )
-            .expect("engine run");
-        assert!(engine_run.outcome.is_some(), "truthful outcome should be populated");
-        let outcome = engine_run.outcome.expect("outcome");
+        assert!(run.outcome.is_some(), "truthful outcome should be populated");
+        let outcome = run.outcome.expect("outcome");
         assert_eq!(
             outcome.generated_file_count + outcome.failed_file_count,
-            engine_run.generated_files.len() + engine_run.failed_files.len()
+            run.generated_files.len() + run.failed_files.len()
         );
         assert!(outcome.failed_files.iter().all(|file| !file.path.is_empty()));
     }
