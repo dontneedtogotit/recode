@@ -21,7 +21,9 @@ pub trait WorkspaceService {
 
 pub struct LocalWorkspaceService;
 
-const MAX_PROJECT_FILE_BYTES: usize = 1024 * 1024;
+/// Ceiling for any single project file read or written over IPC or by the
+/// pipeline; shared with descriptor-relative call sites outside this module.
+pub(crate) const MAX_PROJECT_FILE_BYTES: usize = 1024 * 1024;
 const MAX_LISTED_FILES: usize = 256;
 const MAX_LISTED_BYTES: usize = 8 * 1024 * 1024;
 const MAX_VISITED_ENTRIES: usize = 2048;
@@ -363,15 +365,27 @@ impl LocalWorkspaceService {
                 });
                 DomainError::internal(format!("write failed: {e}"))
             });
-        // Release the descriptor before checking that no temp artifact leaked.
-        drop(root);
+        // Release the descriptor before sweeping leaked temp artifacts — the
+        // sweep re-opens the root descriptor-relative and removes only
+        // `.recode-write-` files in the root itself (remove_file refuses
+        // directories; a symlink swap would at worst unlink the link).
         result?;
-        if let Ok(entries) = std::fs::read_dir(workspace_root) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if name.to_str().is_some_and(|n| n.starts_with(".recode-write-")) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
+        if let Ok(root) = RootDir::open(workspace_root) {
+            let mut orphans = Vec::new();
+            root.visit_entries(
+                "",
+                &safe_io::VisitLimits { max_depth: 0, max_entries: MAX_VISITED_ENTRIES },
+                &mut |entry| {
+                    if entry.kind == safe_io::EntryKind::File
+                        && entry.relative_path.starts_with(".recode-write-")
+                    {
+                        orphans.push(entry.relative_path);
+                    }
+                    safe_io::VisitControl::Continue
+                },
+            )?;
+            for orphan in orphans {
+                let _ = root.remove_file(&orphan);
             }
         }
         Ok(())
@@ -411,74 +425,77 @@ impl LocalWorkspaceService {
 
     pub fn list_project_files(&self, workspace_root: &Path) -> Result<Vec<ProjectFile>, DomainError> {
         let mut out = Vec::new();
-        let metadata = std::fs::symlink_metadata(workspace_root)
+        // Descriptor-relative, bounded walk: the root is verified once by
+        // `RootDir::open` and every directory is enumerated by getdents64
+        // against a held descriptor, so symlinks swapped in concurrently are
+        // reported as symlinks and never traversed.
+        let root = RootDir::open(workspace_root)
             .map_err(|e| DomainError::invalid_input(format!("workspace root unavailable: {e}")))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(DomainError::invalid_input("workspace root must be a directory, not a symlink"));
-        }
-        let mut visited = 0;
-        let mut bytes = 0;
-        self.collect_files(workspace_root, workspace_root, 0, &mut out, &mut visited, &mut bytes)?;
+        let mut visited = 0usize;
+        let mut total_bytes = 0usize;
+        root.visit_entries(
+            "",
+            &safe_io::VisitLimits {
+                max_depth: MAX_LIST_DEPTH,
+                max_entries: MAX_VISITED_ENTRIES,
+            },
+            &mut |entry| {
+                visited += 1;
+                if visited > MAX_VISITED_ENTRIES {
+                    return safe_io::VisitControl::Abort(std::io::Error::other(
+                        "workspace tree exceeds the entry limit",
+                    ));
+                }
+                let name = entry.relative_path.rsplit('/').next().unwrap_or("");
+                if is_private_component(name) {
+                    return safe_io::VisitControl::SkipSubtree;
+                }
+                match entry.kind {
+                    safe_io::EntryKind::Directory => {
+                        if is_generated_directory(name) {
+                            return safe_io::VisitControl::SkipSubtree;
+                        }
+                    }
+                    safe_io::EntryKind::File => {
+                        let rel = &entry.relative_path;
+                        let Ok(validated) = validate_project_path(rel) else {
+                            return safe_io::VisitControl::SkipSubtree;
+                        };
+                        let _ = validated;
+                        let bytes = match root.read_file(rel, MAX_PROJECT_FILE_BYTES) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                return safe_io::VisitControl::Abort(std::io::Error::other(
+                                    format!("workspace file read failed for {rel}: {e}"),
+                                ))
+                            }
+                        };
+                        let Ok(content) = String::from_utf8(bytes) else {
+                            return safe_io::VisitControl::Continue;
+                        };
+                        total_bytes += content.len();
+                        if total_bytes > MAX_LISTED_BYTES || out.len() >= MAX_LISTED_FILES {
+                            return safe_io::VisitControl::Abort(std::io::Error::other(
+                                "workspace listing exceeds its file or byte limit",
+                            ));
+                        }
+                        let language = rel.rsplit_once('.').map(|(_, ext)| ext.to_string()).filter(|ext| !ext.is_empty());
+                        out.push(ProjectFile { path: rel.clone(), content, language });
+                    }
+                    _ => {}
+                }
+                safe_io::VisitControl::Continue
+            },
+        )
+        .map_err(|e| {
+            let kind = if e.to_string().contains("limit") {
+                DomainError::invalid_input(e.to_string())
+            } else {
+                DomainError::internal(e.to_string())
+            };
+            kind
+        })?;
         Ok(out)
-    }
-
-    fn collect_files(
-        &self,
-        root: &Path,
-        current: &Path,
-        depth: usize,
-        out: &mut Vec<ProjectFile>,
-        visited: &mut usize,
-        total_bytes: &mut usize,
-    ) -> Result<()> {
-        if depth > MAX_LIST_DEPTH {
-            return Err(DomainError::invalid_input("workspace tree exceeds the depth limit"));
-        }
-        let entries = std::fs::read_dir(current)
-            .map_err(|e| DomainError::internal(format!("workspace directory read failed: {e}")))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| DomainError::internal(format!("workspace entry read failed: {e}")))?;
-            *visited += 1;
-            if *visited > MAX_VISITED_ENTRIES {
-                return Err(DomainError::invalid_input("workspace tree exceeds the entry limit"));
-            }
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name.starts_with(".recode-write-") || is_private_component(name) {
-                continue;
-            }
-            let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path)
-                .map_err(|e| DomainError::internal(format!("workspace entry inspection failed: {e}")))?;
-            if metadata.file_type().is_symlink() { continue; }
-            if metadata.is_dir() {
-                if is_generated_directory(name) { continue; }
-                self.collect_files(root, &path, depth + 1, out, visited, total_bytes)?;
-            } else if metadata.is_file() {
-                let rel = path.strip_prefix(root)
-                    .map_err(|_| DomainError::internal("workspace entry left its root"))?
-                    .to_str().ok_or_else(|| DomainError::invalid_input("workspace file path is not UTF-8"))?.to_string();
-                safe_file_target(root, &rel)?;
-                if metadata.len() > MAX_PROJECT_FILE_BYTES as u64 {
-                    return Err(DomainError::invalid_input(format!("workspace file exceeds size limit: {rel}")));
-                }
-                let mut bytes = Vec::new();
-                std::fs::File::open(&path)
-                    .and_then(|handle| handle.take(MAX_PROJECT_FILE_BYTES as u64 + 1).read_to_end(&mut bytes))
-                    .map_err(|e| DomainError::internal(format!("workspace file read failed for {rel}: {e}")))?;
-                if bytes.len() > MAX_PROJECT_FILE_BYTES {
-                    return Err(DomainError::invalid_input(format!("workspace file exceeds size limit: {rel}")));
-                }
-                let Ok(content) = String::from_utf8(bytes) else { continue };
-                *total_bytes += content.len();
-                if *total_bytes > MAX_LISTED_BYTES || out.len() >= MAX_LISTED_FILES {
-                    return Err(DomainError::invalid_input("workspace listing exceeds its file or byte limit"));
-                }
-                let language = rel.rsplit_once('.').map(|(_, ext)| ext.to_string()).filter(|ext| !ext.is_empty());
-                out.push(ProjectFile { path: rel, content, language });
-            }
-        }
-        Ok(())
     }
 }
 

@@ -131,7 +131,14 @@ pub fn checkpoint_path(workspace_root: &Path) -> PathBuf {
 /// Fail-soft load: a missing, corrupt, wrong-schema or wrong-project
 /// checkpoint reads as `None` and resume is simply disabled.
 pub fn load_checkpoint(workspace_root: &Path, project_id: &str) -> Option<GenerationCheckpoint> {
-    let bytes = fs::read(checkpoint_path(workspace_root)).ok()?;
+    let bytes = crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| {
+            root.read_file(
+                &format!("{CHECKPOINT_DIR}/{CHECKPOINT_FILE}"),
+                MAX_CHECKPOINT_BYTES,
+            )
+        })
+        .ok()?;
     let checkpoint: GenerationCheckpoint = serde_json::from_slice(&bytes).ok()?;
     if checkpoint.schema_version != 1 {
         return None;
@@ -201,7 +208,8 @@ pub fn finalize_attempt(
 /// Remove the checkpoint after a successful build (devcode `clearCheckpoint`);
 /// fail-soft.
 pub fn clear_checkpoint(workspace_root: &Path) {
-    let _ = fs::remove_file(checkpoint_path(workspace_root));
+    let _ = crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| root.remove_file(&format!("{CHECKPOINT_DIR}/{CHECKPOINT_FILE}")));
 }
 
 /// Files resumable from this checkpoint: entries recorded for the same inputs
@@ -223,19 +231,17 @@ pub fn resume_paths(
                 return false;
             };
             let disk = workspace_root.join(path.as_str());
-            let Some(metadata) = fs::symlink_metadata(&disk).ok() else {
-                return false;
-            };
-            if !metadata.is_file() {
+            if !std::fs::symlink_metadata(&disk).is_ok_and(|m| m.is_file()) {
                 return false;
             }
             // Post-generation validation guard: a checkpoint entry whose
             // on-disk bytes are malformed (possible for checkpoints created
             // before the package.json gate) is not resumed.
-            if !crate::pipeline::validation::is_valid_generated_file(path, &disk) {
+            if !crate::pipeline::validation::is_valid_generated_file(path, workspace_root) {
                 return false;
             }
-            crate::pipeline::ledger::file_sha256(&disk).is_some_and(|sha| sha == entry.sha256)
+            crate::pipeline::ledger::file_sha256_beneath(workspace_root, path)
+                .is_some_and(|sha| sha == entry.sha256)
         })
         .cloned()
         .collect()
@@ -249,10 +255,16 @@ fn write_checkpoint(workspace_root: &Path, checkpoint: &GenerationCheckpoint) ->
         Err(_) => return false, // fail-soft on bounds breaches
     };
     let dir = workspace_root.join(CHECKPOINT_DIR);
-    if fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
-    fs::write(checkpoint_path(workspace_root), json).is_ok()
+    let _ = fs::create_dir_all(&dir); // bootstrap only; write re-opens without following links
+    crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| {
+            root.write_file(
+                &format!("{CHECKPOINT_DIR}/{CHECKPOINT_FILE}"),
+                json.as_bytes(),
+                MAX_CHECKPOINT_BYTES,
+            )
+        })
+        .is_ok()
 }
 
 #[cfg(test)]

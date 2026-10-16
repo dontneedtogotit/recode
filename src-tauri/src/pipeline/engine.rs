@@ -14,6 +14,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Read ceiling for reused-file summaries; a file this large was never a
+/// valid project file anyway (writes are capped far lower).
+const MAX_REUSED_READ_BYTES: usize = 4 * 1024 * 1024;
+
 fn apply_verification(
     outcome: &mut BuildOutcome,
     results: &[crate::pipeline::verify::VerificationResult],
@@ -309,25 +313,16 @@ impl<'a> LocalPipelineEngine<'a> {
                 crate::pipeline::scaffolder::scaffold_files(&file_paths, &project_name, goal);
             for file in scaffold_files {
                 if let Some(workspace_root) = workspace_root {
-                    match crate::workspace::safe_file_target(workspace_root, &file.path) {
-                        Ok(target) => {
-                            if let Some(parent) = target.parent() {
-                                let _ = std::fs::create_dir_all(parent);
-                            }
-                            match std::fs::write(&target, &file.content) {
-                                Ok(()) => {
-                                    generated.push(file);
-                                }
-                                Err(error) => {
-                                    failed.push(GeneratedFile {
-                                        path: file.path,
-                                        content: String::new(),
-                                        language: None,
-                                        status: GeneratedFileStatus::Failed,
-                                        error: Some(error.to_string()),
-                                    });
-                                }
-                            }
+                    match crate::workspace::safe_io::RootDir::open(workspace_root)
+                        .and_then(|root| {
+                            root.write_file(
+                                &file.path,
+                                file.content.as_bytes(),
+                                crate::workspace::MAX_PROJECT_FILE_BYTES,
+                            )
+                        }) {
+                        Ok(()) => {
+                            generated.push(file);
                         }
                         Err(error) => {
                             failed.push(GeneratedFile {
@@ -392,7 +387,7 @@ impl<'a> LocalPipelineEngine<'a> {
             // so a later failure still resumes from this point.
             for path in &checkpoint_resume_paths {
                 if let Some(sha256) =
-                    crate::pipeline::ledger::file_sha256(&workspace_root.join(path))
+                    crate::pipeline::ledger::file_sha256_beneath(workspace_root, path)
                 {
                     let _ = checkpoint_state.record(path, sha256);
                 }
@@ -416,7 +411,10 @@ impl<'a> LocalPipelineEngine<'a> {
                 reuse_paths.contains(&prompt.file_path)
                     || checkpoint_resume_paths.contains(&prompt.file_path)
             }) {
-                let content = std::fs::read_to_string(workspace_root.join(&prompt.file_path))
+                let content = crate::workspace::safe_io::RootDir::open(workspace_root)
+                    .and_then(|root| root.read_file(&prompt.file_path, MAX_REUSED_READ_BYTES))
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
                     .unwrap_or_default();
                 if !content.is_empty() {
                     reused_summaries.push((
@@ -491,7 +489,7 @@ impl<'a> LocalPipelineEngine<'a> {
                     ) && source_path_set.contains(file.path.as_str())
                 }) {
                     if let Some(sha256) =
-                        crate::pipeline::ledger::file_sha256(&workspace_root.join(&file.path))
+                        crate::pipeline::ledger::file_sha256_beneath(workspace_root, &file.path)
                     {
                         written.insert(file.path.clone(), sha256);
                     }
@@ -546,9 +544,10 @@ impl<'a> LocalPipelineEngine<'a> {
             let excess_set: std::collections::HashSet<&str> =
                 excess_paths.iter().map(|s| s.as_str()).collect();
             if let Some(workspace_root) = workspace_root {
-                for path in &excess_paths {
-                    let target = workspace_root.join(path);
-                    let _ = std::fs::remove_file(&target);
+                if let Ok(root) = crate::workspace::safe_io::RootDir::open(workspace_root) {
+                    for path in &excess_paths {
+                        let _ = root.remove_file(path);
+                    }
                 }
             }
             generated.retain(|f| !excess_set.contains(f.path.as_str()));
@@ -658,14 +657,18 @@ impl<'a> LocalPipelineEngine<'a> {
             let repaired =
                 repair_service.apply_repair(&repair_result.suggestions[0], &file_snapshots);
             // Write repaired files back to disk and update the generated list.
-            for repaired_file in &repaired {
-                if let Some(workspace_root) = workspace_root {
-                    if let Ok(target) =
-                        crate::workspace::safe_file_target(workspace_root, &repaired_file.path)
-                    {
-                        let _ = std::fs::write(&target, &repaired_file.content);
+            if let Some(workspace_root) = workspace_root {
+                if let Ok(root) = crate::workspace::safe_io::RootDir::open(workspace_root) {
+                    for repaired_file in &repaired {
+                        let _ = root.write_file(
+                            &repaired_file.path,
+                            repaired_file.content.as_bytes(),
+                            crate::workspace::MAX_PROJECT_FILE_BYTES,
+                        );
                     }
                 }
+            }
+            for repaired_file in &repaired {
                 if let Some(gen) = generated.iter_mut().find(|f| f.path == repaired_file.path) {
                     gen.content = repaired_file.content.clone();
                 }
@@ -1253,7 +1256,7 @@ mod http_generation_tests {
         let written: std::collections::BTreeMap<String, String> = source_paths
             .iter()
             .map(|path| {
-                let sha = crate::pipeline::ledger::file_sha256(&root.path().join(path)).unwrap();
+                let sha = crate::pipeline::ledger::file_sha256_beneath(root.path(), path).unwrap();
                 (path.clone(), sha)
             })
             .collect();

@@ -98,10 +98,18 @@ pub fn compute_generation_inputs_hash(goal: &str, model: &str, file_paths: &[Str
     hex(&hasher.finalize())
 }
 
-/// SHA-256 of file bytes on disk; `None` when the file is absent/unreadable.
-pub fn file_sha256(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
+/// SHA-256 of a file's bytes, read descriptor-relative beneath the workspace
+/// root; `None` when the file is absent, a symlink, non-regular, or oversized.
+pub fn file_sha256(root: &crate::workspace::safe_io::RootDir, relative: &str) -> Option<String> {
+    let bytes = root.read_file(relative, crate::workspace::MAX_PROJECT_FILE_BYTES).ok()?;
     Some(hex(&Sha256::digest(bytes)))
+}
+
+/// Path-of-workspace-root convenience for callers that hold only the root
+/// path; opens the root descriptor per call.
+pub fn file_sha256_beneath(workspace_root: &Path, relative: &str) -> Option<String> {
+    let root = crate::workspace::safe_io::RootDir::open(workspace_root).ok()?;
+    file_sha256(&root, relative)
 }
 
 /// SHA-256 of in-memory content; the checkpoint records the hash of the bytes
@@ -140,16 +148,12 @@ pub fn decide_regeneration(
     let Some(recorded) = ledger.checksum(file_path) else {
         return RegenerationDecision::Regenerate;
     };
-    let path = workspace_root.join(file_path);
-    // Never reuse a symlink: it can point outside the workspace, and the
-    // persistence gate rejects symlinked outputs anyway. Regenerate instead.
-    let Some(metadata) = fs::symlink_metadata(&path).ok() else {
-        return RegenerationDecision::Regenerate;
-    };
-    if !metadata.is_file() {
-        return RegenerationDecision::Regenerate;
-    }
-    let Some(actual) = file_sha256(&path) else {
+    // Read descriptor-relative beneath the workspace root; `read_file` refuses
+    // symlinks and non-regular files, so a symlinked output regenerates.
+    let Some(actual) = crate::workspace::safe_io::RootDir::open(workspace_root)
+        .ok()
+        .and_then(|root| file_sha256(&root, file_path))
+    else {
         return RegenerationDecision::Regenerate;
     };
     if actual != recorded {
@@ -158,7 +162,7 @@ pub fn decide_regeneration(
     // Post-generation validation guard: a ledger entry whose on-disk bytes
     // are malformed (possible for ledgers created before the package.json
     // gate) must regenerate instead of being reused forever.
-    if !crate::pipeline::validation::is_valid_generated_file(file_path, &path) {
+    if !crate::pipeline::validation::is_valid_generated_file(file_path, &workspace_root) {
         return RegenerationDecision::Regenerate;
     }
     RegenerationDecision::Reuse
@@ -186,8 +190,9 @@ pub fn plan_regeneration(
 /// Fail-soft persistence: a missing or malformed ledger means "no history",
 /// never a hard failure — the run just regenerates everything.
 pub fn load_ledger(workspace_root: &Path, project_id: &str) -> Option<GenerationLedger> {
-    let path = ledger_path(workspace_root);
-    let bytes = fs::read(path).ok()?;
+    let bytes = crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| root.read_file(&format!("{LEDGER_DIR}/{LEDGER_FILE}"), MAX_LEDGER_BYTES))
+        .ok()?;
     let ledger: GenerationLedger = serde_json::from_slice(&bytes).ok()?;
     if ledger.schema_version != 1 {
         return None;
@@ -221,8 +226,9 @@ pub fn store_ledger(
         Err(_) => return Ok(()), // fail-soft on bounds breaches
     };
     let dir = workspace_root.join(LEDGER_DIR);
-    fs::create_dir_all(&dir)?;
-    fs::write(ledger_path(workspace_root), json)
+    let _ = fs::create_dir_all(&dir); // bootstrap only; write re-opens without following links
+    crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| root.write_file(&format!("{LEDGER_DIR}/{LEDGER_FILE}"), json.as_bytes(), MAX_LEDGER_BYTES))
 }
 
 #[cfg(test)]
@@ -291,7 +297,7 @@ mod tests {
         std::fs::write(root.path().join("src/main.tsx"), "v1").expect("write");
         let mut ledger = GenerationLedger::new("proj", "hash-1");
         ledger
-            .record("README.md", file_sha256(&root.path().join("README.md")).unwrap())
+            .record("README.md", file_sha256_beneath(root.path(), "README.md").unwrap())
             .expect("record");
         ledger
             .record("src/main.tsx", "0".repeat(64)) // stale checksum on purpose
@@ -336,7 +342,10 @@ mod tests {
         let mut ledger = GenerationLedger::new("proj", "hash-1");
         // Hash the *target* bytes so checksum comparison alone would pass.
         ledger
-            .record("src/App.tsx", file_sha256(&outside).expect("hash"))
+            .record(
+                "src/App.tsx",
+                crate::pipeline::ledger::content_sha256("same bytes"),
+            )
             .expect("record");
         assert_eq!(
             decide_regeneration(Some(&ledger), "hash-1", root.path(), "src/App.tsx"),
@@ -350,7 +359,7 @@ mod tests {
         std::fs::write(root.path().join("README.md"), "same bytes").expect("write");
         let mut ledger = GenerationLedger::new("proj", "hash-1");
         ledger
-            .record("README.md", file_sha256(&root.path().join("README.md")).unwrap())
+            .record("README.md", file_sha256_beneath(root.path(), "README.md").unwrap())
             .expect("record");
         let paths = vec![
             "README.md".to_string(),
@@ -370,7 +379,7 @@ mod tests {
         std::fs::write(root.path().join("README.md"), "same bytes").expect("write");
         let written = BTreeMap::from([(
             "README.md".to_string(),
-            file_sha256(&root.path().join("README.md")).expect("hash"),
+            file_sha256_beneath(root.path(), "README.md").expect("hash"),
         )]);
         store_ledger(root.path(), "proj", "hash-1", &written).expect("store");
         let loaded = load_ledger(root.path(), "proj").expect("reload");

@@ -101,23 +101,15 @@ impl VerificationStage for DefaultVerificationStage {
             {
                 return VerificationResult::failed(self.name(), format!("{} was not written", file.path));
             }
-            let target = match crate::workspace::safe_file_target(workspace_root, &file.path) {
-                Ok(target) => target,
+            let root = match crate::workspace::safe_io::RootDir::open(workspace_root) {
+                Ok(root) => root,
                 Err(error) => return VerificationResult::failed(self.name(), format!("{}: {error}", file.path)),
             };
-            let mut handle = match std::fs::File::open(&target) {
-                Ok(handle) => handle,
+            let actual = match root.read_file(&file.path, crate::workspace::MAX_PROJECT_FILE_BYTES) {
+                Ok(bytes) => bytes,
                 Err(error) => return VerificationResult::failed(self.name(), format!("{}: {error}", file.path)),
             };
-            if !handle.metadata().is_ok_and(|metadata| metadata.is_file()) {
-                return VerificationResult::failed(self.name(), format!("{} is not a regular file", file.path));
-            }
             let expected = file.content.as_bytes();
-            let mut actual = Vec::new();
-            let limit = u64::try_from(expected.len()).unwrap_or(u64::MAX).saturating_add(1);
-            if let Err(error) = handle.take(limit).read_to_end(&mut actual) {
-                return VerificationResult::failed(self.name(), format!("{}: {error}", file.path));
-            }
             if actual != expected {
                 return VerificationResult::failed(self.name(), format!("{} differs from generated content", file.path));
             }

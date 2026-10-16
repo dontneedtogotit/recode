@@ -12,16 +12,22 @@ use std::ffi::CString;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::mem::MaybeUninit;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use rustix::fd::{AsFd, OwnedFd};
-use rustix::fs::{fchmod, fstat, fsync, mkdirat, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+use rustix::fs::{
+    fchmod, fstat, fsync, mkdirat, openat, renameat, statat, unlinkat, AtFlags, FileType, Mode,
+    OFlags, RawDir,
+};
 
 // POSIX file-type bits; stable constants, no libc dependency needed.
 const S_IFMT: u32 = 0o170_000;
 const S_IFREG: u32 = 0o100_000;
 const S_IFDIR: u32 = 0o040_000;
+const S_IFLNK: u32 = 0o120_000;
 
 fn open_flags() -> OFlags {
     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC
@@ -159,11 +165,185 @@ impl RootDir {
         }
         result
     }
+    /// Atomically move the regular file `from` to `to`, both resolved
+    /// descriptor-relative to this root. Symlinks are never followed or
+    /// moved: a symlinked source is refused, and a symlinked destination
+    /// entry is replaced (the link itself, not its target). Both parent
+    /// directories are fsynced so the move is durable.
+    pub fn rename_file(&self, from: &str, to: &str) -> io::Result<()> {
+        let (from_parent, from_name) = self.open_parent(from, false)?;
+        let (to_parent, to_name) = self.open_parent(to, false)?;
+        let source = statat(from_parent.as_fd(), from_name.clone(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(errno)?;
+        if source.st_mode & S_IFMT != S_IFREG {
+            return Err(io::Error::other("refusing to rename a non-regular file"));
+        }
+        if let Ok(existing) = statat(to_parent.as_fd(), to_name.clone(), AtFlags::SYMLINK_NOFOLLOW) {
+            let mode = existing.st_mode & S_IFMT;
+            if mode == S_IFDIR {
+                return Err(io::Error::other("refusing to replace a directory"));
+            }
+            // Regular files and symlinks are replaceable: `renameat` swaps
+            // the directory entry itself and never follows the link, so the
+            // rename cannot reach the link's target.
+        }
+        renameat(
+            from_parent.as_fd(),
+            from_name.clone(),
+            to_parent.as_fd(),
+            to_name.clone(),
+        )
+        .map_err(errno)?;
+        fsync(from_parent.as_fd()).map_err(errno)?;
+        if from_parent.as_fd().as_raw_fd() != to_parent.as_fd().as_raw_fd() {
+            fsync(to_parent.as_fd()).map_err(errno)?;
+        }
+        Ok(())
+    }
+
+    /// Remove the regular file or symlink at `relative` without following
+    /// links. Directories are refused (`EISDIR` from `unlinkat` itself, no
+    /// `REMOVEDIR` flag is ever passed). The parent directory is fsynced so
+    /// the removal is durable.
+    pub fn remove_file(&self, relative: &str) -> io::Result<()> {
+        let (parent, name) = self.open_parent(relative, false)?;
+        unlinkat(parent.as_fd(), name, AtFlags::empty()).map_err(errno)?;
+        fsync(parent.as_fd()).map_err(errno)?;
+        Ok(())
+    }
+
+    /// Walk the tree beneath `relative` and report every entry to `sink`
+    /// with a path relative to `relative`. Enumeration is descriptor
+    /// relative (`getdents64` against a held directory descriptor), so
+    /// entries swapped in as symlinks are reported as symlinks and never
+    /// traversed. Hard bounds: recursion never exceeds `limits.max_depth`,
+    /// no more than `limits.max_entries` entries are reported, and any
+    /// relative path longer than `MAX_PATH_BYTES` aborts the walk. `.` and
+    /// `..` are never reported. Returning [`VisitControl::SkipSubtree`]
+    /// prunes descent into that directory without reporting its children.
+    pub fn visit_entries(
+        &self,
+        relative: &str,
+        limits: &VisitLimits,
+        sink: &mut dyn FnMut(EntryInfo) -> VisitControl,
+    ) -> io::Result<()> {
+        let start = if relative.is_empty() {
+            self.fd.try_clone()?
+        } else {
+            let (parent, name) = self.open_parent(relative, false)?;
+            open_dir_at(&parent, &name)?
+        };
+        let mut reported = 0;
+        visit_dir(&start, "", 0, limits, &mut reported, sink)
+    }
 }
 
-/// Convert a rustix `Errno` into an `io::Error`, preserving the code.
-fn errno(error: rustix::io::Errno) -> io::Error {
-    io::Error::from_raw_os_error(error.raw_os_error())
+/// Per-entry directive returned by a [`RootDir::visit_entries`] sink:
+/// keep walking, prune this directory's subtree, or abort with an error.
+#[derive(Debug)]
+pub enum VisitControl {
+    Continue,
+    SkipSubtree,
+    Abort(io::Error),
+}
+
+/// Bounds for [`RootDir::visit_entries`]. Zero `max_depth` lists only the
+/// entries of the starting directory; zero `max_entries` reports nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct VisitLimits {
+    pub max_depth: usize,
+    pub max_entries: usize,
+}
+
+/// A filesystem entry reported by [`RootDir::visit_entries`]. Symlinks are
+/// reported as [`EntryKind::Symlink`] and never traversed, so their
+/// targets cannot redirect the walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// One visited entry: its path relative to the walk root and its type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryInfo {
+    pub relative_path: String,
+    pub kind: EntryKind,
+}
+
+/// Longest relative path a walk will report; longer entries abort the walk.
+const MAX_PATH_BYTES: usize = 4096;
+/// `getdents64` batch buffer. One batch must hold a full batch of entries;
+/// Linux caps names at NAME_MAX (255), so 8 KiB is ample.
+const DIRENT_BUF: usize = 8 * 1024;
+
+fn visit_dir(
+    dir: &OwnedFd,
+    prefix: &str,
+    depth: usize,
+    limits: &VisitLimits,
+    reported: &mut usize,
+    sink: &mut dyn FnMut(EntryInfo) -> VisitControl,
+) -> io::Result<()> {
+    let mut buffer = [MaybeUninit::<u8>::uninit(); DIRENT_BUF];
+    let mut raw = RawDir::new(dir.as_fd(), &mut buffer);
+    while let Some(entry) = raw.next() {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if *reported >= limits.max_entries {
+            return Err(io::Error::other("directory listing exceeded the entry limit"));
+        }
+        let name = std::str::from_utf8(name)
+            .map_err(|_| io::Error::other("directory entry is not valid UTF-8"))?;
+        let relative_path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if relative_path.len() > MAX_PATH_BYTES {
+            return Err(io::Error::other("directory entry exceeded the path limit"));
+        }
+        let kind = match entry.file_type() {
+            FileType::RegularFile => EntryKind::File,
+            FileType::Directory => EntryKind::Directory,
+            FileType::Symlink => EntryKind::Symlink,
+            FileType::Unknown => {
+                // Some filesystems report DT_UNKNOWN; fall back to
+                // descriptor-relative, non-following metadata.
+                let stat = statat(dir.as_fd(), entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(errno)?;
+                match stat.st_mode & S_IFMT {
+                    S_IFREG => EntryKind::File,
+                    S_IFDIR => EntryKind::Directory,
+                    S_IFLNK => EntryKind::Symlink,
+                    _ => EntryKind::Other,
+                }
+            }
+            _ => EntryKind::Other,
+        };
+        *reported += 1;
+        match sink(EntryInfo { relative_path, kind }) {
+            VisitControl::Continue => {}
+            VisitControl::SkipSubtree => continue,
+            VisitControl::Abort(error) => return Err(error),
+        }
+        // Recurse into real directories only; symlinks are never traversed.
+        if kind == EntryKind::Directory && depth < limits.max_depth {
+            let sub = open_dir_at(dir, &entry.file_name().to_owned())?;
+            let child_prefix = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            visit_dir(&sub, &child_prefix, depth + 1, limits, reported, sink)?;
+        }
+    }
+    Ok(())
 }
 
 fn open_dir_at(parent: &OwnedFd, name: &CString) -> io::Result<OwnedFd> {
@@ -207,6 +387,11 @@ fn write_through(
     // or a crash can resurrect the previous file contents.
     fsync(parent.as_fd()).map_err(errno)?;
     Ok(())
+}
+
+/// Convert a rustix `Errno` into an `io::Error`, preserving the code.
+fn errno(error: rustix::io::Errno) -> io::Error {
+    io::Error::from_raw_os_error(error.raw_os_error())
 }
 
 /// Flush a directory's entries to stable storage.
@@ -281,6 +466,137 @@ mod tests {
         std::os::unix::fs::symlink(base.join("outside"), base.join("dirlink")).unwrap();
         assert!(root.write_file("dirlink/file.txt", b"no", 1024).is_err());
         assert!(root.read_file("dirlink/file.txt", 1024).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn rename_and_remove_files_beneath_the_descriptor() {
+        let base = std::env::temp_dir().join(format!("recode-rootmv-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let root = RootDir::open(&base).unwrap();
+        root.write_file("a/one.txt", b"data", 1024).unwrap();
+        root.write_file("b/two.txt", b"keep", 1024).unwrap();
+        // Rename within and across directories.
+        root.rename_file("a/one.txt", "a/renamed.txt").unwrap();
+        assert_eq!(root.read_file("a/renamed.txt", 1024).unwrap(), b"data");
+        assert!(root.read_file("a/one.txt", 1024).is_err());
+        root.rename_file("a/renamed.txt", "b/moved.txt").unwrap();
+        assert_eq!(root.read_file("b/moved.txt", 1024).unwrap(), b"data");
+        // Renaming a directory or missing file is refused.
+        assert!(root.rename_file("a", "b/clobbered").is_err());
+        assert!(root.rename_file("a/missing.txt", "b/x.txt").is_err());
+        // Renaming over a directory destination is refused.
+        std::fs::create_dir_all(base.join("b/dir.txt")).unwrap();
+        assert!(root.rename_file("b/moved.txt", "b/dir.txt").is_err());
+        assert!(root.read_file("b/moved.txt", 1024).is_ok());
+        // Symlinked sources and destinations never redirect: the link is
+        // replaced or the rename is refused; the outside target is untouched.
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("b/link.txt")).unwrap();
+        assert!(root.rename_file("b/link.txt", "b/moved.txt").is_err());
+        root.rename_file("b/moved.txt", "b/link.txt").unwrap();
+        assert!(std::fs::symlink_metadata(base.join("b/link.txt"))
+            .unwrap()
+            .file_type()
+            .is_file());
+        // Remove works on regular files and on symlinks (the link only).
+        std::os::unix::fs::symlink(base.join("outside/loot.txt"), base.join("b/loot-link"))
+            .unwrap();
+        root.remove_file("b/loot-link").unwrap();
+        assert!(!base.join("outside/loot.txt").exists());
+        root.remove_file("b/link.txt").unwrap();
+        assert!(root.remove_file("b/link.txt").is_err());
+        // Directories are refused by unlinkat without REMOVEDIR.
+        assert!(root.remove_file("a").is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn visit_entries_reports_a_bounded_tree_and_never_traverses_symlinks() {
+        let base = std::env::temp_dir().join(format!("recode-rootls-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("outside/escape")).unwrap();
+        std::fs::write(base.join("outside/escape/stolen.txt"), b"no").unwrap();
+        std::fs::create_dir_all(base.join("src/nested")).unwrap();
+        std::fs::write(base.join("src/main.ts"), b"").unwrap();
+        std::fs::write(base.join("src/nested/util.ts"), b"").unwrap();
+        std::fs::write(base.join("README.md"), b"").unwrap();
+        let root = RootDir::open(&base).unwrap();
+
+        // A symlink to a directory inside the tree is reported as a symlink
+        // and never descended into.
+        std::os::unix::fs::symlink("nested", base.join("src/dir-link")).unwrap();
+        // A symlink escaping the root is likewise never traversed.
+        std::os::unix::fs::symlink("../outside", base.join("src/escape-link")).unwrap();
+
+        let mut entries = Vec::new();
+        root.visit_entries(
+            "src",
+            &VisitLimits {
+                max_depth: 4,
+                max_entries: 100,
+            },
+            &mut |entry| {
+                entries.push(entry);
+                VisitControl::Continue
+            },
+        )
+        .unwrap();
+        let by_path: std::collections::BTreeMap<_, _> = entries
+            .into_iter()
+            .map(|e| (e.relative_path, e.kind))
+            .collect();
+        assert_eq!(by_path.get("main.ts"), Some(&EntryKind::File));
+        assert_eq!(by_path.get("nested"), Some(&EntryKind::Directory));
+        assert_eq!(by_path.get("nested/util.ts"), Some(&EntryKind::File));
+        assert_eq!(by_path.get("dir-link"), Some(&EntryKind::Symlink));
+        assert_eq!(by_path.get("escape-link"), Some(&EntryKind::Symlink));
+        assert!(!by_path.contains_key("dir-link/util.ts"));
+        assert!(!by_path.contains_key("escape-link/escape/stolen.txt"));
+
+        // max_depth 0 lists the starting directory only.
+        let mut shallow = Vec::new();
+        root.visit_entries(
+            "src",
+            &VisitLimits {
+                max_depth: 0,
+                max_entries: 100,
+            },
+            &mut |entry| {
+                shallow.push(entry.relative_path);
+                VisitControl::Continue
+            },
+        )
+        .unwrap();
+        assert_eq!(shallow.len(), 4); // main.ts, nested, dir-link, escape-link
+
+        // The entry limit aborts the walk with an error, not a silent truncation.
+        let err = root
+            .visit_entries(
+                "src",
+                &VisitLimits {
+                    max_depth: 4,
+                    max_entries: 2,
+                },
+                &mut |_| VisitControl::Continue,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("entry limit"));
+
+        // The root itself can be walked via the empty relative path.
+        let mut top = Vec::new();
+        root.visit_entries(
+            "",
+            &VisitLimits {
+                max_depth: 0,
+                max_entries: 100,
+            },
+            &mut |entry| {
+                top.push(entry.relative_path);
+                VisitControl::Continue
+            },
+        )
+        .unwrap();
+        assert!(top.contains(&"README.md".to_string()) && top.contains(&"src".to_string()));
         let _ = std::fs::remove_dir_all(base);
     }
 }

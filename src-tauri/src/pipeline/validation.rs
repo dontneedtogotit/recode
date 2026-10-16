@@ -51,13 +51,19 @@ pub fn validate_generated_content(path: &str, content: &str) -> Result<(), Strin
 
 /// Disk variant for the reuse/resume guards: `true` when the file on disk is
 /// valid to reuse. Non-`package.json` files are never gated; an unreadable or
-/// malformed `package.json` is never reused.
-pub fn is_valid_generated_file(path: &str, disk: &Path) -> bool {
+/// malformed `package.json` is never reused. Reads are descriptor-relative
+/// beneath the workspace root.
+pub fn is_valid_generated_file(path: &str, workspace_root: &Path) -> bool {
     if !is_package_json_path(path) {
         return true;
     }
-    match std::fs::read_to_string(disk) {
-        Ok(content) => validate_generated_content(path, &content).is_ok(),
+    match crate::workspace::safe_io::RootDir::open(workspace_root)
+        .and_then(|root| root.read_file("package.json", crate::workspace::MAX_PROJECT_FILE_BYTES))
+    {
+        Ok(bytes) => {
+            let content = String::from_utf8_lossy(&bytes).into_owned();
+            validate_generated_content(path, &content).is_ok()
+        }
         Err(_) => false,
     }
 }
@@ -108,13 +114,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manifest = root.path().join("package.json");
         std::fs::write(&manifest, "{not json").unwrap();
-        assert!(!is_valid_generated_file("package.json", &manifest));
+        assert!(!is_valid_generated_file("package.json", root.path()));
         std::fs::write(&manifest, "{\"name\":\"ok\"}").unwrap();
-        assert!(is_valid_generated_file("package.json", &manifest));
+        assert!(is_valid_generated_file("package.json", root.path()));
         // Non-package files pass without even requiring the file to exist.
-        assert!(is_valid_generated_file("src/main.ts", &root.path().join("missing.ts")));
+        assert!(is_valid_generated_file("src/main.ts", root.path()));
         // Invalid UTF-8 can never be valid JSON.
         std::fs::write(&manifest, [0xff, 0xfe]).unwrap();
-        assert!(!is_valid_generated_file("package.json", &manifest));
+        assert!(!is_valid_generated_file("package.json", root.path()));
     }
 }

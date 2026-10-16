@@ -86,15 +86,27 @@ impl WorkspaceReconciler for DefaultJsxExtensionReconciler {
                 });
             }
         };
+        // Descriptor-relative renames: the root is opened once and both the
+        // source and destination resolve beneath the held descriptor.
+        let root = match super::safe_io::RootDir::open(workspace_root) {
+            Ok(root) => root,
+            Err(error) => {
+                return Ok(ReconciliationResult {
+                    reconciler: self.name().into(),
+                    modified: false,
+                    summary: "Skipped (workspace root unavailable)".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(error.to_string()),
+                });
+            }
+        };
         for file in files {
             if !file.path.ends_with(".ts") || file.path.ends_with(".d.ts") {
                 continue;
             }
             if contains_jsx(&file.content) {
                 let new_relative = format!("{}.x", file.path);
-                let old_target = workspace_root.join(&file.path);
-                let new_target = workspace_root.join(&new_relative);
-                if let Err(error) = std::fs::rename(&old_target, &new_target) {
+                if let Err(error) = root.rename_file(&file.path, &new_relative) {
                     return Ok(ReconciliationResult {
                         reconciler: self.name().into(),
                         modified: false,
@@ -126,9 +138,8 @@ impl WorkspaceReconciler for DefaultIndexHtmlReconciler {
 
     fn reconcile(&self, workspace_root: &Path) -> Result<ReconciliationResult> {
         let start = std::time::Instant::now();
-        let root_index = workspace_root.join("index.html");
-        let public_index = workspace_root.join("public").join("index.html");
-        if root_index.exists() {
+        let root = super::safe_io::RootDir::open(workspace_root)?;
+        if root.read_file("index.html", super::MAX_PROJECT_FILE_BYTES).is_ok() {
             return Ok(ReconciliationResult {
                 reconciler: self.name().into(),
                 modified: false,
@@ -137,16 +148,12 @@ impl WorkspaceReconciler for DefaultIndexHtmlReconciler {
                 error: None,
             });
         }
-        if !public_index.exists() {
-            return Ok(ReconciliationResult {
-                reconciler: self.name().into(),
-                modified: false,
-                summary: "No index.html found".into(),
-                duration_ms: start.elapsed().as_millis() as u64,
-                error: None,
-            });
-        }
-        std::fs::rename(&public_index, &root_index).map_err(|e| DomainError::internal(format!("index.html move failed: {e}")))?;
+        let public_index = root
+            .read_file("public/index.html", super::MAX_PROJECT_FILE_BYTES)
+            .map_err(|e| DomainError::internal(format!("index.html read failed: {e}")))?;
+        root.write_file("index.html", &public_index, super::MAX_PROJECT_FILE_BYTES)
+            .map_err(|e| DomainError::internal(format!("index.html move failed: {e}")))?;
+        let _ = root.remove_file("public/index.html");
         Ok(ReconciliationResult {
             reconciler: self.name().into(),
             modified: true,
@@ -379,9 +386,17 @@ impl WorkspaceReconciler for DefaultImportPathReconciler {
                 content = content.replace(&old_import_s, &new_import_s);
             }
             if content != original {
-                let target = workspace_root.join(&file.path);
-                if std::fs::write(&target, &content).is_ok() {
-                    updated += 1;
+                if let Ok(root) = super::safe_io::RootDir::open(workspace_root) {
+                    if root
+                        .write_file(
+                            &file.path,
+                            content.as_bytes(),
+                            super::MAX_PROJECT_FILE_BYTES,
+                        )
+                        .is_ok()
+                    {
+                        updated += 1;
+                    }
                 }
             }
         }
@@ -431,10 +446,13 @@ impl WorkspaceReconciler for DefaultViteConfigDependencyReconciler {
 
     fn reconcile(&self, workspace_root: &Path) -> Result<ReconciliationResult> {
         let start = std::time::Instant::now();
-        let vite_config_path = workspace_root.join("vite.config.ts");
-        let vite_config = match std::fs::read_to_string(&vite_config_path) {
-            Ok(content) => content,
-            Err(_) => {
+        let vite_config = match super::safe_io::RootDir::open(workspace_root)
+            .and_then(|root| root.read_file("vite.config.ts", super::MAX_PROJECT_FILE_BYTES))
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        {
+            Some(content) => content,
+            None => {
                 return Ok(ReconciliationResult {
                     reconciler: self.name().into(),
                     modified: false,
@@ -501,9 +519,10 @@ impl WorkspaceReconciler for DefaultViteConfigDependencyReconciler {
         }
 
         // Read package.json and check which imports are missing.
-        let pkg_path = workspace_root.join("package.json");
-        let pkg_content = match std::fs::read_to_string(&pkg_path) {
-            Ok(content) => content,
+        let pkg_content = match super::safe_io::RootDir::open(workspace_root)
+            .and_then(|root| root.read_file("package.json", super::MAX_PROJECT_FILE_BYTES))
+        {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) => {
                 return Ok(ReconciliationResult {
                     reconciler: self.name().into(),
@@ -569,7 +588,9 @@ impl WorkspaceReconciler for DefaultViteConfigDependencyReconciler {
         }
 
         let updated = serde_json::to_string_pretty(&pkg_json).unwrap_or_default() + "\n";
-        if let Err(error) = std::fs::write(&pkg_path, &updated) {
+        if let Err(error) = super::safe_io::RootDir::open(workspace_root)
+            .and_then(|root| root.write_file("package.json", updated.as_bytes(), super::MAX_PROJECT_FILE_BYTES))
+        {
             return Ok(ReconciliationResult {
                 reconciler: self.name().into(),
                 modified: false,
