@@ -28,6 +28,8 @@ fn normalize_fractional_scaling() {
 }
 
 fn main() {
+    // Initialize tracing subscriber for structured spans
+    tracing_subscriber::fmt::try_init().ok();
     normalize_fractional_scaling();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![

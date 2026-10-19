@@ -254,6 +254,7 @@ impl<'a> LocalPipelineService<'a> {
         self.run_internal(input, None, Some(control))
     }
 
+    #[tracing::instrument(skip(self, cancel, control), fields(run_id = %input.run_id, project_id = %input.project_id.clone().unwrap_or_default()))]
     fn run_internal(
         &self,
         input: PipelineInput,
@@ -407,6 +408,80 @@ mod tests {
             self.0.abort();
             Ok(Vec::new())
         }
+    }
+
+    #[test]
+    fn pipeline_spans_carry_run_and_project_ids() {
+        // ROADMAP 0.3 structured spans: run_internal must emit a span whose
+        // fields include run_id and project_id, observable on the cancel path.
+        use std::sync::{Arc, Mutex};
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        impl tracing::Subscriber for Capture {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool { true }
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                let meta = span.metadata();
+                if meta.fields().field("run_id").is_some() {
+                    let mut buf = String::new();
+                    let mut visitor = FieldDump(&mut buf);
+                    span.record(&mut visitor);
+                    self.0.lock().unwrap().push(buf);
+                }
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+            fn event(&self, _event: &tracing::Event<'_>) {}
+        }
+        struct FieldDump<'a>(&'a mut String);
+        impl tracing::field::Visit for FieldDump<'_> {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.push_str(field.name());
+                self.0.push('=');
+                self.0.push_str(value);
+                self.0.push('\n');
+            }
+            fn record_debug(
+                &mut self,
+                field: &tracing::field::Field,
+                value: &dyn std::fmt::Debug,
+            ) {
+                self.0.push_str(field.name());
+                self.0.push('=');
+                self.0.push_str(&format!("{:?}", value));
+                self.0.push('\n');
+            }
+        }
+        let subscriber = Capture(Arc::clone(&captured));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let (event_bus, _receiver) = EventBus::new();
+        let planner = LocalPlanner::new();
+        let control = PipelineControl::new();
+        let healer = CancelAfterPlan(&control);
+        let service = LocalPipelineService::new(&planner, &LocalAgentRuntime, &event_bus, &healer);
+        let result = service.run_with_control(
+            PipelineInput {
+                goal: "build a page".into(),
+                emit_events: false,
+                run_id: "span-cancel-run".into(),
+                project_id: Some("span-project".into()),
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
+            },
+            &control,
+        );
+        assert!(result.unwrap_err().to_string().to_lowercase().contains("cancel"));
+        let spans = captured.lock().unwrap();
+        let run_span = spans
+            .iter()
+            .find(|s| s.contains("run_id=span-cancel-run") && s.contains("project_id=span-project"));
+        assert!(
+            run_span.is_some(),
+            "run_internal span must carry run_id/project_id; captured: {:?}",
+            spans
+        );
     }
 
     #[test]

@@ -99,6 +99,7 @@ impl<'a> LocalPipelineEngine<'a> {
         self.generate_project_files_cancellable(workspace_root, goal, &|| false)
     }
 
+    #[tracing::instrument(skip(self, should_cancel), fields(stage = "generate", run_id))]
     pub fn generate_project_files_cancellable(
         &self,
         workspace_root: Option<&Path>,
@@ -849,6 +850,7 @@ impl<'a> LocalPipelineEngine<'a> {
         (generated, failed, outcome)
     }
 
+    #[tracing::instrument(skip(self, files), fields(stage = "verify", run_id))]
     pub fn run_verification(
         &self,
         workspace_root: Option<&Path>,

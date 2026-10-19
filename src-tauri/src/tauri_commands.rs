@@ -363,6 +363,7 @@ pub fn validate_workspace_path(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip(app), fields(run_id = %input.run_id, project_id = %input.project_id.clone().unwrap_or_default()))]
 pub async fn run_pipeline(
     app: tauri::AppHandle,
     input: PipelineInput,
@@ -618,6 +619,7 @@ fn pipeline_build_succeeded(build_requested: bool, outcome_success: Option<bool>
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[tracing::instrument(fields(run_id = %run_id))]
 pub fn cancel_pipeline(run_id: String) -> Result<bool, String> {
     let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
@@ -1502,6 +1504,7 @@ pub fn run_orchestrator_autonomous(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[tracing::instrument(fields(run_id = %run_id))]
 pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
     let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
@@ -1512,6 +1515,7 @@ pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[tracing::instrument(fields(run_id = %run_id))]
 pub fn resume_pipeline(run_id: String) -> Result<bool, String> {
     let active_runs = lock_active_runs();
     Ok(active_runs
@@ -1520,6 +1524,7 @@ pub fn resume_pipeline(run_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[tracing::instrument(fields(run_id = %run_id))]
 pub fn abort_pipeline(run_id: String) -> Result<bool, String> {
     let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
@@ -1547,6 +1552,7 @@ fn persisted_pipeline_state(record: Option<&PipelineRunHistoryRecord>) -> &'stat
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[tracing::instrument(fields(run_id = %run_id))]
 pub fn get_pipeline_status(run_id: String) -> Result<PipelineStatusResponse, String> {
     let active_runs = lock_active_runs();
     let state = active_runs.get(&run_id).map(|control| control.state());

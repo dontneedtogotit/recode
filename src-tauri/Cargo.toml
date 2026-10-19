@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = "0.3"
 uuid = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustix = { version = "1", features = ["fs", "process"] }
