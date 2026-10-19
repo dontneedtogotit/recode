@@ -95,7 +95,7 @@ impl EdgeCaseExerciseService {
             };
 
             let type_key = serde_json::to_string(&scenario.r#type)
-                .unwrap()
+                .unwrap_or_else(|_| scenario.id.clone())
                 .trim_matches('"')
                 .to_string();
             

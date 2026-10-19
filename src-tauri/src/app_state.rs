@@ -42,7 +42,9 @@ impl AppState {
         let connection = Mutex::new(open_recode_db(path)?);
         let model_catalog = ModelCatalog::with_builtins();
         {
-            let conn = connection.lock().expect("lock db connection");
+            let conn = connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ModelCatalog::load(&model_catalog, &conn)?;
         }
         let state = Self {
@@ -124,7 +126,7 @@ impl AppState {
     }
 
     pub fn db(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
-        self.connection.lock().expect("lock db connection")
+        self.connection.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

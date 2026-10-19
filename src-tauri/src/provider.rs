@@ -61,7 +61,7 @@ impl DefaultGatewayService {
 
 impl super::gateway::GatewayService for DefaultGatewayService {
     fn send(&self, request: GatewayRequest) -> Result<GatewayResponse, DomainError> {
-        let mut breaker = self.circuit_breaker.lock().unwrap();
+        let mut breaker = self.circuit_breaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !breaker.allow_request() {
             return Err(DomainError::internal("circuit breaker open"));
         }
@@ -71,10 +71,10 @@ impl super::gateway::GatewayService for DefaultGatewayService {
 
         match result {
             Ok(_) => {
-                self.circuit_breaker.lock().unwrap().record_success();
+                self.circuit_breaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record_success();
             }
             Err(_) => {
-                self.circuit_breaker.lock().unwrap().record_failure();
+                self.circuit_breaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record_failure();
             }
         }
         result

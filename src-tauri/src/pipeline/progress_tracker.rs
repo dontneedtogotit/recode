@@ -38,30 +38,30 @@ impl ProgressTracker {
 
     pub fn register_active_build(&self, project_id: String) -> Arc<AtomicBool> {
         let cancel_token = Arc::new(AtomicBool::new(false));
-        self.active_builds.lock().unwrap().insert(project_id, cancel_token.clone());
+        self.active_builds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(project_id, cancel_token.clone());
         cancel_token
     }
 
     pub fn has_active_build(&self, project_id: &str) -> bool {
-        self.active_builds.lock().unwrap().contains_key(project_id)
+        self.active_builds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(project_id)
     }
 
     pub fn cancel_build(&self, project_id: &str) {
-        if let Some(token) = self.active_builds.lock().unwrap().remove(project_id) {
+        if let Some(token) = self.active_builds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(project_id) {
             token.store(true, Ordering::SeqCst);
         }
     }
 
     pub fn cleanup_active_build(&self, project_id: &str) {
-        self.active_builds.lock().unwrap().remove(project_id);
+        self.active_builds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(project_id);
     }
 
     pub fn subscribe(&self, project_id: String, callback: Box<dyn Fn(BuildProgress) + Send + Sync>) {
-        self.subscribers.lock().unwrap().entry(project_id).or_default().push(callback);
+        self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(project_id).or_default().push(callback);
     }
 
     pub fn notify_progress(&self, progress: BuildProgress) {
-        if let Some(callbacks) = self.subscribers.lock().unwrap().get(&progress.project_id) {
+        if let Some(callbacks) = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&progress.project_id) {
             for cb in callbacks {
                 cb(progress.clone());
             }

@@ -204,21 +204,24 @@ impl<A: ProviderAdapter + 'static> DefaultGatewayService<A> {
         let task_type = request.task_type.as_ref().map(|value| value.to_lowercase());
 
         if let Some(task_type) = task_type {
-            let routes = self.routing.lock().expect("lock routing");
+            let routes = self.routing.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(adapter) = routes.get(&task_type) {
                 return adapter.clone();
             }
         }
 
         if let Some(provider) = request.provider.strip_prefix("router:") {
-            let routes = self.routing.lock().expect("lock routing");
+            let routes = self.routing.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(adapter) = routes.get(provider) {
                 return adapter.clone();
             }
         }
 
         if let Some(default) = &self.default_provider {
-            let routes = self.routing.lock().expect("lock routing");
+            let routes = self.routing.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(adapter) = routes.get(default.as_str()) {
                 return adapter.clone();
             }
@@ -232,7 +235,8 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
     fn send(&self, request: GatewayRequest) -> Result<GatewayResponse, DomainError> {
         let adapter = self.resolve_adapter(&request);
 
-        let mut breaker = self.circuit_breaker.lock().expect("lock circuit breaker");
+        let mut breaker = self.circuit_breaker.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !breaker.allow_request() {
             let _ = capture_diagnostics(super::tauri_commands::CaptureDiagnosticsInput {
                 kind: "provider".into(),
@@ -254,13 +258,13 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
             Ok(_) => {
                 self.circuit_breaker
                     .lock()
-                    .expect("lock circuit breaker")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .record_success();
             }
             Err(_) => {
                 self.circuit_breaker
                     .lock()
-                    .expect("lock circuit breaker")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .record_failure();
             }
         }
@@ -272,7 +276,7 @@ impl<A: ProviderAdapter + 'static> GatewayService for DefaultGatewayService<A> {
         Some(
             self._circuit_breaker()
                 .lock()
-                .expect("lock breaker")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .state()
                 .clone(),
         )
@@ -406,7 +410,8 @@ mod tests {
             },
         );
         {
-            let mut breaker = service._circuit_breaker().lock().expect("lock breaker");
+            let mut breaker = service._circuit_breaker().lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
             breaker.record_failure();
         }
 
@@ -569,13 +574,13 @@ static DEFAULT_GATEWAY: std::sync::RwLock<Option<Arc<dyn GatewayService>>> =
 
 pub fn default_gateway() -> Arc<dyn GatewayService> {
     {
-        let guard = DEFAULT_GATEWAY.read().expect("gateway lock poisoned");
+        let guard = DEFAULT_GATEWAY.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(gw) = guard.as_ref() {
             return gw.clone();
         }
     }
     let built = build_gateway();
-    let mut guard = DEFAULT_GATEWAY.write().expect("gateway lock poisoned");
+    let mut guard = DEFAULT_GATEWAY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Another thread may have built one while we waited on the write lock.
     guard.get_or_insert_with(|| built);
     guard.as_ref().unwrap().clone()
@@ -586,6 +591,6 @@ pub fn default_gateway() -> Arc<dyn GatewayService> {
 /// effect without restarting the app.
 pub fn refresh_gateway() {
     let built = build_gateway();
-    let mut guard = DEFAULT_GATEWAY.write().expect("gateway lock poisoned");
+    let mut guard = DEFAULT_GATEWAY.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     *guard = Some(built);
 }

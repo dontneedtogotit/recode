@@ -131,7 +131,7 @@ pub fn registry() -> &'static Mutex<InMemoryAgentRegistry> {
 pub fn list_agents() -> Vec<AgentDescriptor> {
     registry()
         .lock()
-        .expect("lock agent registry")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .list()
         .into_iter()
         .cloned()
@@ -142,7 +142,7 @@ pub fn list_agents() -> Vec<AgentDescriptor> {
 pub fn register_agent(descriptor: AgentDescriptor) -> Result<(), String> {
     registry()
         .lock()
-        .expect("lock agent registry")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .register(descriptor)
         .map_err(|e| e.to_string())
 }
@@ -151,7 +151,7 @@ pub fn register_agent(descriptor: AgentDescriptor) -> Result<(), String> {
 pub fn execute_agent_task(input: AgentTaskInput) -> Result<AgentTaskResult, String> {
     registry()
         .lock()
-        .expect("lock agent registry")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .execute(input)
         .map_err(|e| e.to_string())
 }

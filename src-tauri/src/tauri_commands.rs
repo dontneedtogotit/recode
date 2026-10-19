@@ -41,8 +41,28 @@ static PROVIDER_SELECTION: LazyLock<Mutex<ProviderSelectionEngine>> = LazyLock::
     ))
 });
 
+/// Seconds since the epoch; a clock set before 1970 records 0 rather than
+/// panicking inside an IPC command.
+fn epoch_secs() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn provider_selection() -> &'static Mutex<ProviderSelectionEngine> {
     &PROVIDER_SELECTION
+}
+
+/// Lock the active-runs table, recovering from a poisoned lock instead of
+/// panicking on a user-driven IPC path: a panic in one command thread must
+/// not take down every later pipeline interaction.
+fn lock_active_runs()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<String, Arc<PipelineControl>>> {
+    ACTIVE_RUNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 static ACTIVE_RUNS: LazyLock<Mutex<std::collections::HashMap<String, Arc<PipelineControl>>>> =
@@ -50,6 +70,24 @@ static ACTIVE_RUNS: LazyLock<Mutex<std::collections::HashMap<String, Arc<Pipelin
 
 fn monitor() -> &'static DefaultRuntimeMonitorService {
     crate::runtime_monitor::service()
+}
+
+/// Render a typed error at the IPC boundary without discarding its
+/// machine-readable code: `[code] actionable message`, e.g.
+/// `[invalid_input] symlink path not allowed: src/linked (os error 40)`.
+/// The frontend surfaces this string directly, so the code stays in-band
+/// instead of being stringified away by `to_string()`.
+fn ipc_error(error: crate::domain::DomainError) -> String {
+    use crate::domain::DomainError as E;
+    let (code, message) = match error {
+        E::NotFound { message } => ("not_found", message),
+        E::InvalidInput { message } => ("invalid_input", message),
+        E::Internal { message } => ("internal", message),
+        E::Unauthorized => ("unauthorized", "unauthorized".to_string()),
+        E::Conflict { message } => ("conflict", message),
+        E::Unavailable { message } => ("unavailable", message),
+    };
+    format!("[{code}] {message}")
 }
 
 #[tauri::command]
@@ -84,7 +122,7 @@ pub fn save_agent_task_run(input: SaveAgentTaskRunInput) -> Result<(), String> {
     AppState::global()
         .task_runs()
         .insert_run(&record)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -92,7 +130,7 @@ pub fn list_agent_task_runs(agent_id: String) -> Result<Vec<AgentTaskRunRecord>,
     AppState::global()
         .task_runs()
         .list_runs(&agent_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -111,7 +149,7 @@ pub fn save_plan(input: SavePlanInput) -> Result<(), String> {
     AppState::global()
         .plans()
         .save_plan(&record)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -119,7 +157,7 @@ pub fn list_plans() -> Result<Vec<PlanRecord>, String> {
     AppState::global()
         .plans()
         .list_plans()
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -145,7 +183,7 @@ pub fn record_plan_metrics(
     };
     PLAN_CIRCUIT_BREAKER
         .lock()
-        .expect("lock plan circuit breaker")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .load_recent_metrics(&project_id, vec![metrics]);
     Ok(())
 }
@@ -160,7 +198,7 @@ pub fn attempt_self_heal() -> Result<AttemptSelfHealResponse, String> {
     let events = monitor().poll_once();
     let actions = DefaultSelfHealService
         .attempt_repair(&events)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ipc_error(e.into()))?;
     Ok(AttemptSelfHealResponse { actions })
 }
 
@@ -169,7 +207,7 @@ pub fn attempt_startup_self_heal() -> Result<AttemptSelfHealResponse, String> {
     let events = monitor().poll_once();
     let actions = DefaultSelfHealService
         .attempt_repair(&events)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ipc_error(e.into()))?;
     Ok(AttemptSelfHealResponse { actions })
 }
 
@@ -194,11 +232,7 @@ pub fn capture_diagnostics(input: CaptureDiagnosticsInput) -> Result<(), String>
         format!("{}: {}", input.message, detail)
     };
     monitor().record_event(MonitorEvent {
-        ts: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time went backwards")
-            .as_secs()
-            .to_string(),
+        ts: epoch_secs(),
         severity: "error".into(),
         message,
     });
@@ -224,7 +258,7 @@ fn projects_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn workspace_for_id(app: &tauri::AppHandle, id: &str) -> Result<std::path::PathBuf, String> {
-    registered_workspace_root(&projects_dir(app)?, id).map_err(|error| error.to_string())
+    registered_workspace_root(&projects_dir(app)?, id).map_err(|error| ipc_error(error.into()))
 }
 
 #[tauri::command]
@@ -235,7 +269,7 @@ pub fn create_workspace(
     let service = LocalWorkspaceService;
     let info = service
         .create_workspace(&input.id, &projects_dir(&app)?)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ipc_error(e.into()))?;
     Ok(TauriCreateWorkspaceResponse {
         id: info.id,
         root: info.root.to_string_lossy().to_string(),
@@ -255,7 +289,9 @@ pub fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<TauriWorkspaceInfo>,
         return Ok(Vec::new());
     }
     let service = LocalWorkspaceService;
-    let workspaces = service.list_workspaces(&root).map_err(|e| e.to_string())?;
+    let workspaces = service
+        .list_workspaces(&root)
+        .map_err(|e| ipc_error(e.into()))?;
     workspaces
         .into_iter()
         .map(|w| {
@@ -264,7 +300,7 @@ pub fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<TauriWorkspaceInfo>,
                     id: w.id,
                     root: path.to_string_lossy().to_string(),
                 })
-                .map_err(|error| error.to_string())
+                .map_err(|error| ipc_error(error.into()))
         })
         .collect()
 }
@@ -278,7 +314,7 @@ pub fn write_project_file(
     let service = LocalWorkspaceService;
     service
         .write_project_file(&workspace_for_id(&app, &workspace_id)?, &file)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -290,7 +326,7 @@ pub fn read_project_file(
     let service = LocalWorkspaceService;
     service
         .read_project_file(&workspace_for_id(&app, &workspace_id)?, &path)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -301,7 +337,7 @@ pub fn list_project_files(
     let service = LocalWorkspaceService;
     service
         .list_project_files(&workspace_for_id(&app, &workspace_id)?)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -311,7 +347,7 @@ pub fn validate_workspace_path(
     path: String,
 ) -> Result<PathValidation, String> {
     match workspace_for_id(&app, &workspace_id)
-        .and_then(|root| safe_file_target(&root, &path).map_err(|error| error.to_string()))
+        .and_then(|root| safe_file_target(&root, &path).map_err(|error| ipc_error(error.into())))
     {
         Ok(_) => Ok(PathValidation {
             valid: true,
@@ -341,7 +377,10 @@ pub async fn run_pipeline(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
-        return Err("invalid pipeline run id".into());
+        return Err(
+            "[invalid_input] pipeline run id is required: pass the id returned by run_pipeline"
+                .into(),
+        );
     }
     let workspace_root = input
         .project_id
@@ -361,7 +400,7 @@ pub async fn run_pipeline(
     let goal = input.goal.clone();
     let control = Arc::new(PipelineControl::new());
     {
-        let mut active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+        let mut active_runs = lock_active_runs();
         if active_runs.contains_key(&run_id) {
             return Err(format!("pipeline run already active: {run_id}"));
         }
@@ -377,24 +416,32 @@ pub async fn run_pipeline(
                 error: None,
                 finished_at: std::time::SystemTime::now(),
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ipc_error(error.into()))?;
         active_runs.insert(run_id.clone(), control.clone());
     }
 
     let plan_revision_id = uuid::Uuid::new_v4().to_string();
-    let _ = AppState::global()
-        .plan_revisions()
-        .insert(&crate::pipeline::identity::PlanRevision {
-            schema_version: 1,
-            revision_id: plan_revision_id.clone(),
-            plan_id: run_id.clone(),
-            previous_revision: None,
-            created_at_millis: std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or_default(),
-            status: crate::pipeline::identity::RevisionStatus::Draft,
+    if let Err(error) =
+        AppState::global()
+            .plan_revisions()
+            .insert(&crate::pipeline::identity::PlanRevision {
+                schema_version: 1,
+                revision_id: plan_revision_id.clone(),
+                plan_id: run_id.clone(),
+                previous_revision: None,
+                created_at_millis: std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_default(),
+                status: crate::pipeline::identity::RevisionStatus::Draft,
+            })
+    {
+        let _ = capture_diagnostics(CaptureDiagnosticsInput {
+            kind: "database".into(),
+            message: "plan revision persistence failed".into(),
+            detail: Some(error.to_string()),
         });
+    }
     if let Some(workspace_root) = workspace_root.as_ref() {
         let projects_dir = workspace_root
             .parent()
@@ -408,7 +455,7 @@ pub async fn run_pipeline(
         .map(|path| path.display().to_string())
         .unwrap_or_default();
         let grant_id = uuid::Uuid::new_v4().to_string();
-        let _ = AppState::global().workspace_grants().insert(
+        if let Err(error) = AppState::global().workspace_grants().insert(
             &crate::pipeline::identity::WorkspaceGrant {
                 schema_version: 1,
                 grant_id: grant_id.clone(),
@@ -418,8 +465,14 @@ pub async fn run_pipeline(
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or_default(),
             },
-        );
-        let _ =
+        ) {
+            let _ = capture_diagnostics(CaptureDiagnosticsInput {
+                kind: "database".into(),
+                message: "workspace grant persistence failed".into(),
+                detail: Some(error.to_string()),
+            });
+        }
+        if let Err(error) =
             AppState::global()
                 .run_identities()
                 .insert(&crate::pipeline::identity::RunIdentity {
@@ -431,7 +484,14 @@ pub async fn run_pipeline(
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or_default(),
-                });
+                })
+        {
+            let _ = capture_diagnostics(CaptureDiagnosticsInput {
+                kind: "database".into(),
+                message: "run identity persistence failed".into(),
+                detail: Some(error.to_string()),
+            });
+        }
     }
 
     let (event_bus, receiver) = crate::event_bus::EventBus::new();
@@ -531,26 +591,24 @@ pub async fn run_pipeline(
     let persisted = AppState::global()
         .pipeline_history()
         .finish(&terminal, stored_result);
-    ACTIVE_RUNS
-        .lock()
-        .expect("lock active runs")
-        .remove(&run_id);
+    lock_active_runs().remove(&run_id);
 
-    persisted.map_err(|error| error.to_string())?;
+    persisted.map_err(|error| ipc_error(error.into()))?;
     if cancelled {
-        return Err("pipeline cancelled by user".into());
+        return Err("[cancelled] pipeline run was cancelled by user request".into());
     }
+    // spawn_blocking join failure is a runtime/tauri::Error, not a DomainError
     let run = result
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("[internal] {error}"))?
+        .map_err(ipc_error)?;
     if !matches!(run.plan.status, crate::planner::PlanStatus::Completed) {
-        return Err("pipeline plan did not complete".into());
+        return Err("[internal] pipeline plan did not complete; check the pipeline events for the failing stage".into());
     }
     if stored_result.is_none() {
-        return Err("pipeline result could not be persisted".into());
+        return Err("[internal] pipeline result could not be persisted; check recode.db availability and diagnostics".into());
     }
     if build_requested && run.outcome.is_none() {
-        return Err("pipeline build outcome unavailable".into());
+        return Err("[internal] pipeline build outcome unavailable for this run; re-run to produce a fresh result".into());
     }
     Ok(run)
 }
@@ -561,7 +619,7 @@ fn pipeline_build_succeeded(build_requested: bool, outcome_success: Option<bool>
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn cancel_pipeline(run_id: String) -> Result<bool, String> {
-    let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+    let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
         Ok(control.abort())
     } else {
@@ -618,7 +676,7 @@ pub async fn install_dependencies(
         crate::pipeline::verifiers::install_step(&root, consent)
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("[internal] {error}"))?;
     Ok(InstallResult { note })
 }
 
@@ -641,7 +699,7 @@ pub async fn verify_build(
     // them Written so the persistence stage re-reads and compares bytes.
     let files = LocalWorkspaceService
         .list_project_files(&root)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ipc_error(error.into()))?;
     let report = tauri::async_runtime::spawn_blocking(move || {
         let generated: Vec<crate::pipeline::types::GeneratedFile> = files
             .into_iter()
@@ -663,7 +721,7 @@ pub async fn verify_build(
         BuildVerificationReport { results, summary }
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("[internal] {error}"))?;
     Ok(report)
 }
 
@@ -672,7 +730,7 @@ pub fn create_and_execute_plan(input: SavePlanInput) -> Result<Plan, String> {
     let planner = LocalPlanner::new();
     let mut plan = planner
         .create_plan(&input.goal)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ipc_error(e.into()))?;
     planner.execute_plan(&mut plan, &LocalAgentRuntime);
     let record = PlanRecord {
         id: plan.id.as_str().into(),
@@ -691,7 +749,7 @@ pub fn create_and_execute_plan(input: SavePlanInput) -> Result<Plan, String> {
     AppState::global()
         .plans()
         .save_plan(&record)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ipc_error(e.into()))?;
     Ok(plan)
 }
 
@@ -750,7 +808,7 @@ pub fn run_quality_scan(input: QualityScanInput) -> Result<crate::quality::Quali
     };
     scanner
         .scan(&conn, std::path::Path::new(&options.root), &options)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -759,7 +817,7 @@ pub fn record_quality_baseline(input: QualityBaselineInput) -> Result<(), String
     let conn = AppState::global().db();
     scanner
         .record_baseline(&conn, &input.file_path, &input.content)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -768,7 +826,7 @@ pub fn list_quality_baselines(
 ) -> Result<Vec<crate::quality::QualityBaseline>, String> {
     let scanner = crate::quality::QualityScanner::new(crate::quality::SqliteQualityRepository);
     let conn = AppState::global().db();
-    scanner.list_baselines(&conn).map_err(|e| e.to_string())
+    scanner.list_baselines(&conn).map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -777,35 +835,35 @@ pub fn delete_quality_baseline(input: DeleteQualityBaselineInput) -> Result<(), 
     let conn = AppState::global().db();
     scanner
         .delete_baseline(&conn, &input.file_path)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn git_status(root: String) -> Result<GitStatus, String> {
     LocalGitService
         .status(std::path::Path::new(&root))
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn git_init(root: String) -> Result<GitInitOutput, String> {
     LocalGitService
         .init(std::path::Path::new(&root))
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn git_add_all(root: String) -> Result<(), String> {
     LocalGitService
         .add_all(std::path::Path::new(&root))
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn git_commit(root: String, message: String) -> Result<GitCommitOutput, String> {
     LocalGitService
         .commit(std::path::Path::new(&root), &message)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -813,7 +871,7 @@ pub fn create_team_task(input: crate::agent_team::TeamTaskRecord) -> Result<(), 
     AppState::global()
         .agent_team()
         .create_task(&input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -821,7 +879,7 @@ pub fn list_team_tasks(team_id: String) -> Result<Vec<crate::agent_team::TeamTas
     AppState::global()
         .agent_team()
         .list_tasks(&team_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -831,7 +889,7 @@ pub fn record_agent_task_history(
     AppState::global()
         .agent_task_history()
         .record(&input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -841,7 +899,7 @@ pub fn list_agent_task_history(
     AppState::global()
         .agent_task_history()
         .list_by_agent(&agent_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -849,7 +907,7 @@ pub fn ensure_learning_schema() -> Result<(), String> {
     AppState::global()
         .learning()
         .ensure_schema()
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -859,7 +917,7 @@ pub fn record_success_pattern(
     AppState::global()
         .learning()
         .record_success_pattern(input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -869,7 +927,7 @@ pub fn record_anti_pattern(
     AppState::global()
         .learning()
         .record_anti_pattern(input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -880,7 +938,7 @@ pub fn list_success_patterns(
     AppState::global()
         .learning()
         .list_success_patterns(&agent_role, &task_type)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -891,7 +949,7 @@ pub fn list_anti_patterns(
     AppState::global()
         .learning()
         .list_anti_patterns(&agent_role, &task_type)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -899,7 +957,7 @@ pub fn record_pipeline_run(record: PipelineRunHistoryRecord) -> Result<(), Strin
     AppState::global()
         .pipeline_history()
         .record(&record)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -907,14 +965,14 @@ pub fn list_pipeline_runs(limit: u64) -> Result<Vec<PipelineRunHistoryRecord>, S
     AppState::global()
         .pipeline_history()
         .list_runs(limit)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn run_gateway_task(input: GatewayRequest) -> Result<GatewayResponse, String> {
     crate::gateway::default_gateway()
         .send(input)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -948,7 +1006,7 @@ pub fn get_provider_selection_status() -> Result<ProviderSelectionStatusResponse
         .unwrap_or_default();
     let mut engine = provider_selection()
         .lock()
-        .expect("lock provider selection");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for setting in settings.into_iter().filter(|setting| setting.enabled) {
         if engine.health_status(&setting.id).is_none() {
             engine.register_provider(ProviderCapabilities {
@@ -977,13 +1035,13 @@ pub fn get_provider_selection_status() -> Result<ProviderSelectionStatusResponse
 #[tauri::command]
 pub fn save_provider(provider: ProviderSettings) -> Result<(), String> {
     SqliteProviderSettingsRepository::save_provider(&AppState::global().db(), &provider)
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
 pub fn list_providers() -> Result<Vec<ProviderSettings>, String> {
     SqliteProviderSettingsRepository::load_providers(&AppState::global().db())
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
 }
 
 #[tauri::command]
@@ -991,7 +1049,7 @@ pub fn delete_provider(id: String) -> Result<(), String> {
     AppState::global()
         .db()
         .execute("DELETE FROM provider_settings WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))
         .map(|_| ())
 }
 
@@ -1071,11 +1129,11 @@ pub fn upsert_model(input: UpsertModelInput) -> Result<crate::model_catalog::Mod
     use crate::model_catalog::*;
     let model_id = input.model_id.trim();
     if model_id.is_empty() {
-        return Err("model_id must not be empty".into());
+        return Err("[invalid_input] model_id must not be empty; select a model first".into());
     }
     let provider = input.provider.trim();
     if provider.is_empty() {
-        return Err("provider must not be empty".into());
+        return Err("[invalid_input] provider must not be empty; select a provider first".into());
     }
     let id = format!("{}/{}", provider, model_id);
     let name = input
@@ -1143,7 +1201,7 @@ pub fn import_env_api_key(
     if key.trim().is_empty() {
         return Err(format!("{} is set but empty", ep.env_var));
     }
-    crate::provider_credentials::save_api_key(&db, &provider, &key).map_err(|e| e.to_string())?;
+    crate::provider_credentials::save_api_key(&db, &provider, &key).map_err(|e| format!("[internal] {e}"))?;
     crate::gateway::refresh_gateway();
     Ok(crate::provider_credentials::list_infos(&db)
         .remove(&provider)
@@ -1188,11 +1246,11 @@ pub fn save_provider_api_key(
 ) -> Result<crate::provider_credentials::ProviderCredentialInfo, String> {
     let provider = provider.trim();
     if provider.is_empty() {
-        return Err("provider must not be empty".into());
+        return Err("[invalid_input] provider must not be empty; select a provider first".into());
     }
     let db = credentials_db_path();
     crate::provider_credentials::save_api_key(&db, provider, &api_key)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("[internal] {e}"))?;
     crate::gateway::refresh_gateway();
     Ok(crate::provider_credentials::list_infos(&db)
         .remove(provider)
@@ -1221,13 +1279,19 @@ pub fn verify_provider_key(
     let result =
         crate::provider_verification::verify_provider_key(&provider, &credentials_db_path());
     let conn = AppState::global().db();
-    let _ = crate::model_selection::save_key_status(
+    if let Err(error) = crate::model_selection::save_key_status(
         &conn,
         &provider,
         &result.status,
         &result.message,
         result.checked_at_ms,
-    );
+    ) {
+        let _ = capture_diagnostics(CaptureDiagnosticsInput {
+            kind: "database".into(),
+            message: "provider key status persistence failed".into(),
+            detail: Some(error.to_string()),
+        });
+    }
     Ok(result)
 }
 
@@ -1246,14 +1310,20 @@ pub fn calibrate_model_concurrency(
     );
     if result.ok {
         let conn = AppState::global().db();
-        let _ = crate::model_selection::save_concurrency_limit(
+        if let Err(error) = crate::model_selection::save_concurrency_limit(
             &conn,
             &format!("{provider}/{model_id}"),
             result.limit,
-        );
+        ) {
+            let _ = capture_diagnostics(CaptureDiagnosticsInput {
+                kind: "database".into(),
+                message: "concurrency limit persistence failed".into(),
+                detail: Some(error.to_string()),
+            });
+        }
         let mut engine = provider_selection()
             .lock()
-            .expect("lock provider selection");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         engine.set_max_in_flight_override(&provider, Some(result.limit));
     }
     Ok(result)
@@ -1264,7 +1334,7 @@ pub fn calibrate_model_concurrency(
 #[tauri::command]
 pub fn get_selection_state() -> Result<crate::model_selection::SelectionState, String> {
     let conn = AppState::global().db();
-    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
+    crate::model_selection::load_selection_state(&conn).map_err(|e| ipc_error(e.into()))
 }
 
 /// Toggle a model's selected flag and return the refreshed selection state.
@@ -1275,8 +1345,8 @@ pub fn set_model_selected(
 ) -> Result<crate::model_selection::SelectionState, String> {
     let conn = AppState::global().db();
     crate::model_selection::set_model_selected(&conn, &model_id, selected)
-        .map_err(|e| e.to_string())?;
-    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))?;
+    crate::model_selection::load_selection_state(&conn).map_err(|e| ipc_error(e.into()))
 }
 
 /// Enable/disable a provider for routing and return the refreshed selection state.
@@ -1287,8 +1357,8 @@ pub fn set_provider_enabled(
 ) -> Result<crate::model_selection::SelectionState, String> {
     let conn = AppState::global().db();
     crate::model_selection::set_provider_enabled(&conn, &provider, enabled)
-        .map_err(|e| e.to_string())?;
-    crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())
+        .map_err(|e| ipc_error(e.into()))?;
+    crate::model_selection::load_selection_state(&conn).map_err(|e| ipc_error(e.into()))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1312,7 +1382,7 @@ pub fn route_models(
     // `route_candidates` falls back to the whole catalog when nothing is selected.
     let selection = {
         let conn = state.db();
-        crate::model_selection::load_selection_state(&conn).map_err(|e| e.to_string())?
+        crate::model_selection::load_selection_state(&conn).map_err(|e| ipc_error(e.into()))?
     };
     let candidates = crate::model_selection::route_candidates(&selection, &catalog.all());
     let request = match input.request {
@@ -1433,7 +1503,7 @@ pub fn run_orchestrator_autonomous(
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
-    let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+    let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
         Ok(control.pause())
     } else {
@@ -1443,7 +1513,7 @@ pub fn pause_pipeline(run_id: String) -> Result<bool, String> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn resume_pipeline(run_id: String) -> Result<bool, String> {
-    let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+    let active_runs = lock_active_runs();
     Ok(active_runs
         .get(&run_id)
         .is_some_and(|control| control.resume()))
@@ -1451,7 +1521,7 @@ pub fn resume_pipeline(run_id: String) -> Result<bool, String> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn abort_pipeline(run_id: String) -> Result<bool, String> {
-    let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+    let active_runs = lock_active_runs();
     if let Some(control) = active_runs.get(&run_id) {
         Ok(control.abort())
     } else {
@@ -1478,7 +1548,7 @@ fn persisted_pipeline_state(record: Option<&PipelineRunHistoryRecord>) -> &'stat
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn get_pipeline_status(run_id: String) -> Result<PipelineStatusResponse, String> {
-    let active_runs = ACTIVE_RUNS.lock().expect("lock active runs");
+    let active_runs = lock_active_runs();
     let state = active_runs.get(&run_id).map(|control| control.state());
     if let Some(state) = state {
         return Ok(PipelineStatusResponse {
@@ -1491,7 +1561,7 @@ pub fn get_pipeline_status(run_id: String) -> Result<PipelineStatusResponse, Str
     let persisted = AppState::global()
         .pipeline_history()
         .get(&run_id)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ipc_error(error.into()))?;
     Ok(PipelineStatusResponse {
         run_id,
         active: false,
@@ -1503,7 +1573,7 @@ pub fn get_pipeline_result(run_id: String) -> Result<Option<PipelineRun>, String
     let json = AppState::global()
         .pipeline_history()
         .get_result_json(&run_id)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ipc_error(error.into()))?;
     decode_pipeline_result(&run_id, json)
 }
 
@@ -1518,7 +1588,7 @@ fn decode_pipeline_result(
         })
         .transpose()?;
     if run.as_ref().is_some_and(|run| run.run_id != run_id) {
-        return Err("stored pipeline result has a mismatched run ID".into());
+        return Err("[internal] stored pipeline result has a mismatched run ID; the run record is corrupt, re-run the pipeline".into());
     }
     Ok(run)
 }

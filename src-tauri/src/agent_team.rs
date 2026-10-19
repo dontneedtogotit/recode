@@ -96,10 +96,10 @@ impl TeamTaskRepository for SqliteTeamTaskRepository {
     }
 
     fn update_status(conn: &Connection, task_id: &str, status: &str) -> Result<(), DomainError> {
-        let now = SystemTime::UNIX_EPOCH
+        let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("time went backwards")
-            .as_secs()
+            .map(|d| d.as_secs())
+            .unwrap_or_default()
             .to_string();
         conn.execute(
             "UPDATE team_tasks SET status = ?1, updated_at = ?2 WHERE id = ?3",

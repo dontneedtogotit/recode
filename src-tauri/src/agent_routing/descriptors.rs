@@ -141,9 +141,12 @@ impl AgentRoutingCatalog {
         let ranked: Vec<&AgentRoutingDescriptor> = scored.into_iter().take(5).map(|tuple| tuple.0).collect();
 
         let mut selected: Vec<&AgentRoutingDescriptor> = if ranked.is_empty() {
-            vec![self
-                .descriptor("agentic-prompt-enhancer")
-                .expect("default fallback agent")]
+            match self.descriptor("agentic-prompt-enhancer") {
+                Some(fallback) => vec![fallback],
+                // Registry misconfiguration must not panic an IPC path; route to
+                // whatever descriptors are registered, or an explicit empty plan.
+                None => self.all().values().take(1).collect(),
+            }
         } else {
             ranked
         };

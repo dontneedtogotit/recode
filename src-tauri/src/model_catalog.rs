@@ -221,7 +221,7 @@ impl ModelCatalog {
     pub fn with_builtins() -> Self {
         let catalog = Self::default();
         {
-            let mut guard = catalog.models.write().unwrap();
+            let mut guard = catalog.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             for model in builtin_models() {
                 guard.insert(model.id.clone(), model);
             }
@@ -233,7 +233,7 @@ impl ModelCatalog {
     /// built-in entry for the same id (built-in metadata is richer); the
     /// built-in entry is merely flagged live/available.
     pub fn upsert(&self, model: ModelInfo) {
-        let mut guard = self.models.write().unwrap();
+        let mut guard = self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = model.id.clone();
         match guard.get_mut(&id) {
             Some(existing) if !existing.discovered && model.discovered => {
@@ -247,16 +247,16 @@ impl ModelCatalog {
     }
 
     pub fn get(&self, id: &str) -> Option<ModelInfo> {
-        self.models.read().unwrap().get(id).cloned()
+        self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).cloned()
     }
 
     pub fn remove(&self, id: &str) {
-        self.models.write().unwrap().remove(id);
+        self.models.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id);
     }
 
     /// All models (built-in + discovered), sorted by id for stable UI order.
     pub fn all(&self) -> Vec<ModelInfo> {
-        let mut v: Vec<ModelInfo> = self.models.read().unwrap().values().cloned().collect();
+        let mut v: Vec<ModelInfo> = self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner).values().cloned().collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v
     }
@@ -273,7 +273,7 @@ impl ModelCatalog {
     /// models over time (exponential moving average).
     pub fn record_latency(&self, id: &str, latency_ms: f64, errored: bool) {
         const ALPHA: f64 = 0.3;
-        let mut guard = self.stats.write().unwrap();
+        let mut guard = self.stats.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = guard
             .entry(id.to_string())
             .or_insert((latency_ms, if errored { 1.0 } else { 0.0 }));
@@ -283,12 +283,12 @@ impl ModelCatalog {
 
     /// Learned (ema_latency_ms, ema_error_rate) for a model, if observed.
     pub fn stats_for(&self, id: &str) -> Option<(f64, f64)> {
-        self.stats.read().unwrap().get(id).copied()
+        self.stats.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).copied()
     }
 
     /// Borrow all models under a read lock (avoids cloning for hot paths).
     pub fn read(&self) -> RwLockReadGuard<'_, HashMap<String, ModelInfo>> {
-        self.models.read().unwrap()
+        self.models.read().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Persist the entire catalog (built-in + discovered + user-edited models)

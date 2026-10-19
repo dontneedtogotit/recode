@@ -50,7 +50,7 @@ impl DefaultRuntimeMonitorService {
 
 impl RuntimeMonitorService for DefaultRuntimeMonitorService {
     fn poll_once(&self) -> Vec<MonitorEvent> {
-        let mut guard = self.events.lock().expect("lock events");
+        let mut guard = self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.drain(..).collect()
     }
 
@@ -59,27 +59,27 @@ impl RuntimeMonitorService for DefaultRuntimeMonitorService {
     }
 
     fn record_agent_task(&self, metrics: AgentTaskMetrics) {
-        let mut guard = self.metrics.lock().expect("lock metrics");
+        let mut guard = self.metrics.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.push(metrics);
     }
 
     fn agent_task_metrics(&self) -> Vec<AgentTaskMetrics> {
-        let guard = self.metrics.lock().expect("lock metrics");
+        let guard = self.metrics.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.clone()
     }
 
     fn record_event(&self, event: MonitorEvent) {
-        let mut guard = self.events.lock().expect("lock events");
+        let mut guard = self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.push(event);
     }
 
     fn recent_events(&self) -> Vec<MonitorEvent> {
-        let guard = self.events.lock().expect("lock events");
+        let guard = self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.clone()
     }
 
     fn clear_events(&self) {
-        let mut guard = self.events.lock().expect("lock events");
+        let mut guard = self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.clear();
     }
 }
