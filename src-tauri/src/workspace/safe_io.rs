@@ -212,6 +212,40 @@ impl RootDir {
         Ok(())
     }
 
+    /// Validate that `relative` names no symlink anywhere along its path,
+    /// resolved entirely against this held descriptor: every intermediate
+    /// component is opened with `openat(O_NOFOLLOW | O_DIRECTORY)` and the
+    /// final component is `statat`-checked with `SYMLINK_NOFOLLOW`. A
+    /// concurrent symlink swap between validation and use fails the actual
+    /// IO operation with `ELOOP` — validation itself can never be bypassed
+    /// by a swap because the descriptor, not the namespace, resolves it.
+    pub fn validate_path(&self, relative: &str) -> io::Result<()> {
+        let components: Vec<&str> = relative.split('/').filter(|c| !c.is_empty()).collect();
+        let mut current = self.fd.try_clone()?;
+        for (index, component) in components.iter().enumerate() {
+            let name = cstr(component)?;
+            if index + 1 == components.len() {
+                // Final component: refuse symlinks and non-regular entries.
+                // A missing entry is fine — validation only guards the shape.
+                if let Ok(stat) = statat(current.as_fd(), name.clone(), AtFlags::SYMLINK_NOFOLLOW) {
+                    if stat.st_mode & S_IFMT == S_IFLNK {
+                        return Err(io::Error::other("symlink path not allowed"));
+                    }
+                }
+            } else {
+                // A missing intermediate cannot hide a symlink, and the actual
+                // IO operation (which walks with O_NOFOLLOW) creates or fails
+                // on it itself — validation only rejects what exists.
+                match open_dir_at(&current, &name) {
+                    Ok(next) => current = next,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Walk the tree beneath `relative` and report every entry to `sink`
     /// with a path relative to `relative`. Enumeration is descriptor
     /// relative (`getdents64` against a held directory descriptor), so
@@ -417,6 +451,27 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, base.join("linked")).unwrap();
         assert!(RootDir::open(&base.join("linked")).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn validate_path_rejects_symlinks_but_tolerates_missing_intermediates() {
+        let base = std::env::temp_dir().join(format!("recode-validate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("src").join("linked")).unwrap();
+        let root = RootDir::open(&base).unwrap();
+        // Missing intermediates are fine — the actual IO walk creates them and
+        // re-checks every component with O_NOFOLLOW.
+        assert!(root.validate_path("new/tree/App.tsx").is_ok());
+        assert!(root.validate_path("existing/missing.txt").is_ok());
+        assert!(root.validate_path("src/real.txt").is_ok());
+        // A symlinked directory along the path is refused by the openat walk.
+        assert!(root.validate_path("src/linked/secret.txt").is_err());
+        // A symlinked final component is refused by the statat check.
+        std::os::unix::fs::symlink(outside.join("x"), base.join("src").join("alias.txt")).unwrap();
+        assert!(root.validate_path("src/alias.txt").is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 

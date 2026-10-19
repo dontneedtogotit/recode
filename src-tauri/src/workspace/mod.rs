@@ -322,19 +322,21 @@ pub fn registered_workspace_root(projects: &Path, id: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-pub(crate) fn safe_file_target(root: &Path, relative: &str) -> Result<PathBuf> {
-    let path = validate_project_path(relative)?;
-    let metadata = std::fs::symlink_metadata(root)
+/// Validate that `relative` designates a path free of symlinks, resolved
+/// entirely against this held descriptor (openat with `O_NOFOLLOW |
+/// O_DIRECTORY` per component). Unlike a path-string walk with
+/// `symlink_metadata`, nothing re-resolves through the namespace between
+/// validation and use, so a symlink swapped in concurrently fails here
+/// with `ELOOP` instead of redirecting IO. Returns the sanitized
+/// relative path.
+pub(crate) fn safe_file_target(root: &Path, relative: &str) -> Result<String> {
+    let sanitized = validate_project_path(relative)?;
+    let root = crate::workspace::safe_io::RootDir::open(root)
         .map_err(|error| DomainError::invalid_input(format!("workspace root unavailable: {error}")))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(DomainError::invalid_input("workspace root must be a directory, not a symlink"));
-    }
-    let mut target = root.to_path_buf();
-    for component in Path::new(&path).components() {
-        target.push(component);
-        reject_symlink(&target)?;
-    }
-    Ok(target)
+    root.validate_path(&sanitized).map_err(|error| {
+        DomainError::invalid_input(format!("symlink path not allowed: {sanitized} ({error})"))
+    })?;
+    Ok(sanitized)
 }
 
 impl LocalWorkspaceService {
