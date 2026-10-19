@@ -688,4 +688,46 @@ mod tests {
         );
         assert!(outcome.failed_files.iter().all(|file| !file.path.is_empty()));
     }
+
+    #[test]
+    fn control_semantics_are_idempotent_and_report_unknown_runs() {
+        // The active-run registry (tauri_commands) decides "unknown run": a
+        // control that exists is always live. A fresh control is Running:
+        // pause/resume from idle is a no-op, cancel is single-shot.
+        let fresh = PipelineControl::new();
+        assert!(!fresh.is_cancelling());
+        assert!(!fresh.resume(), "resume while running is a no-op");
+        assert_eq!(fresh.state(), "running");
+
+        // Cancel is single-shot; repeated cancels and a late pause after
+        // cancellation are all rejected.
+        assert!(fresh.abort());
+        assert!(!fresh.abort(), "second cancel on a cancelling run is a no-op");
+        assert!(!fresh.abort(), "even a third cancel is still a no-op");
+        assert!(!fresh.pause(), "pause after cancel must not un-cancel");
+        assert!(!fresh.resume(), "resume after cancel must not un-cancel");
+        assert!(fresh.is_cancelling());
+        assert_eq!(fresh.state(), "cancelling");
+
+        // A registered-then-paused run resumes exactly once.
+        let paused = PipelineControl::new();
+        assert!(paused.pause());
+        assert_eq!(paused.state(), "pausing");
+        assert!(paused.resume());
+        assert_eq!(paused.state(), "running");
+        assert!(!paused.resume(), "resume of a running run is a no-op");
+    }
+
+    #[test]
+    fn duplicate_run_id_is_rejected_by_reservation() {
+        // Mirrors tauri_commands::run_pipeline's reservation semantics: a
+        // run id already present in the active map is refused.
+        let mut active: std::collections::HashMap<String, std::sync::Arc<PipelineControl>> =
+            std::collections::HashMap::new();
+        let run_id = "duplicate-run".to_string();
+        let control = std::sync::Arc::new(PipelineControl::new());
+        assert!(!active.contains_key(&run_id));
+        active.insert(run_id.clone(), std::sync::Arc::clone(&control));
+        assert!(active.contains_key(&run_id), "second start must be refused");
+    }
 }

@@ -612,8 +612,12 @@ impl<'a> LocalPipelineEngine<'a> {
         } else {
             summary
         };
-        let (verification_results, verification_summary) =
-            self.run_verification(workspace_root, &generated, self.execution_consent);
+        let (verification_results, verification_summary) = self.run_verification_cancellable(
+            workspace_root,
+            &generated,
+            self.execution_consent,
+            should_cancel,
+        );
 
         // Adaptive repair service: suggest repairs based on failed checks and
         // generated file content (ported from devcode AdaptiveRepairService).
@@ -857,6 +861,20 @@ impl<'a> LocalPipelineEngine<'a> {
         files: &[GeneratedFile],
         consent: crate::pipeline::supervisor::ExecutionConsent,
     ) -> (Vec<crate::pipeline::verify::VerificationResult>, String) {
+        self.run_verification_cancellable(workspace_root, files, consent, &|| false)
+    }
+
+    /// Cancellable verify: the dependency-install prerequisite polls
+    /// `should_cancel` so a cancel request interrupts an in-flight npm
+    /// install with the bounded TERM-then-KILL escalation.
+    #[tracing::instrument(skip(self, files, should_cancel), fields(stage = "verify", run_id))]
+    pub fn run_verification_cancellable(
+        &self,
+        workspace_root: Option<&Path>,
+        files: &[GeneratedFile],
+        consent: crate::pipeline::supervisor::ExecutionConsent,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> (Vec<crate::pipeline::verify::VerificationResult>, String) {
         let root = match workspace_root {
             Some(root) => root,
             None => return (Vec::new(), String::new()),
@@ -875,7 +893,7 @@ impl<'a> LocalPipelineEngine<'a> {
         // Prerequisite for the script gates on a fresh workspace: a bounded,
         // supervised dependency install (the F07 network/script consent
         // above covers this step). Skipped when node_modules already exists.
-        let install_note = super::verifiers::install_step(root, consent);
+        let install_note = super::verifiers::install_step_cancellable(root, consent, should_cancel);
         let stages: Vec<Box<dyn crate::pipeline::verify::VerificationStage + Send + Sync>> = vec![
             Box::new(DefaultVerificationStage),
             Box::new(super::verifiers::SupervisedScriptStage::typecheck(

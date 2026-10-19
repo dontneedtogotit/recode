@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::supervisor::{
-    run_supervised, ExecutionConsent, SupervisorLimits, SupervisorReceipt, Termination,
+    run_supervised, run_supervised_cancellable, ExecutionConsent, SupervisorLimits,
+    SupervisorReceipt, Termination,
 };
 use super::types::GeneratedFile;
 use super::verify::{
@@ -80,17 +81,28 @@ pub fn supervised_tool_version(program: &str, cwd: &Path) -> Option<String> {
 /// `node_modules` yet (F07 network/script consent). Returns a short note for
 /// the verification summary, or "" when nothing ran.
 pub fn install_step(workspace_root: &Path, consent: ExecutionConsent) -> String {
+    install_step_cancellable(workspace_root, consent, &|| false)
+}
+
+/// Cancellable install: `should_cancel` is polled while npm install runs; a
+/// `true` stops it with the bounded TERM-then-KILL escalation.
+pub fn install_step_cancellable(
+    workspace_root: &Path,
+    consent: ExecutionConsent,
+    should_cancel: &dyn Fn() -> bool,
+) -> String {
     if !consent.is_granted() || !workspace_root.join("package.json").is_file() {
         return String::new();
     }
     if workspace_root.join("node_modules").is_dir() {
         return String::new();
     }
-    let run = run_supervised(
+    let run = run_supervised_cancellable(
         "npm",
         &["install", "--no-audit", "--no-fund"],
         workspace_root,
         &install_limits(),
+        should_cancel,
     );
     match &run.receipt.termination {
         Termination::Exited(0) => {
@@ -102,6 +114,10 @@ pub fn install_step(workspace_root: &Path, consent: ExecutionConsent) -> String 
         ),
         Termination::TimedOut => format!(
             "install: npm install timed out after {}ms",
+            run.receipt.duration_ms
+        ),
+        Termination::Cancelled => format!(
+            "install: npm install cancelled after {}ms",
             run.receipt.duration_ms
         ),
         Termination::FailedToStart(error) => {
@@ -163,6 +179,15 @@ fn receipt_result(
             GateStatus::Failed,
             format!(
                 "`{command_line}` timed out after {}ms: {}",
+                receipt.duration_ms,
+                tail(&receipt.output, 400)
+            ),
+        ),
+        Termination::Cancelled => (
+            130,
+            GateStatus::Failed,
+            format!(
+                "`{command_line}` cancelled after {}ms: {}",
                 receipt.duration_ms,
                 tail(&receipt.output, 400)
             ),

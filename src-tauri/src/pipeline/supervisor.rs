@@ -71,6 +71,10 @@ impl Default for SupervisorLimits {
 pub enum Termination {
     Exited(i32),
     TimedOut,
+    /// The caller requested cancellation while the child was in flight; the
+    /// supervisor stopped it with the same bounded TERM-then-KILL escalation
+    /// used for timeouts.
+    Cancelled,
     FailedToStart(String),
 }
 
@@ -147,7 +151,57 @@ pub fn run_supervised(
         }
     };
 
-    supervise_child(child, command_argv, limits, started)
+    supervise_child(child, command_argv, limits, started, None)
+}
+
+/// Cancellable variant of [`run_supervised`]: `should_cancel` is polled on the
+/// same 25ms cadence as the wall deadline; a `true` stops the child with the
+/// bounded TERM-then-KILL escalation and reports `Termination::Cancelled`.
+pub fn run_supervised_cancellable(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    limits: &SupervisorLimits,
+    should_cancel: &dyn Fn() -> bool,
+) -> SupervisedRun {
+    let started = Instant::now();
+    let command_argv: Vec<String> = std::iter::once(program.to_string())
+        .chain(args.iter().map(|a| a.to_string()))
+        .collect();
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb");
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            rustix::process::setsid()?;
+            Ok(())
+        });
+    }
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return SupervisedRun {
+                receipt: SupervisorReceipt {
+                    command: command_argv,
+                    termination: Termination::FailedToStart(error.to_string()),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    output: String::new(),
+                    clean_exit: false,
+                },
+                status: None,
+            };
+        }
+    };
+
+    supervise_child(child, command_argv, limits, started, Some(should_cancel))
 }
 
 fn supervise_child(
@@ -155,6 +209,7 @@ fn supervise_child(
     command_argv: Vec<String>,
     limits: &SupervisorLimits,
     started: Instant,
+    should_cancel: Option<&dyn Fn() -> bool>,
 ) -> SupervisedRun {
     let pid = child.id();
 
@@ -203,14 +258,18 @@ fn supervise_child(
                 break;
             }
         }
+        if should_cancel.is_some_and(|check| check()) {
+            break; // caller requested cancellation
+        }
         if Instant::now() >= deadline {
             break; // hard deadline reached
         }
         thread::sleep(Duration::from_millis(25));
     }
 
-    // Timed out: SIGTERM the whole group, wait for the grace period, then
-    // SIGKILL anything still alive.
+    let timed_out = Instant::now() >= deadline;
+    // Timed out or cancelled: SIGTERM the whole group, wait for the grace
+    // period, then SIGKILL anything still alive.
     signal_group(pid, rustix::process::Signal::TERM);
     let grace_deadline = Instant::now() + limits.term_grace;
     loop {
@@ -221,7 +280,11 @@ fn supervise_child(
                 return SupervisedRun {
                     receipt: SupervisorReceipt {
                         command: command_argv,
-                        termination: Termination::TimedOut,
+                        termination: if timed_out {
+                            Termination::TimedOut
+                        } else {
+                            Termination::Cancelled
+                        },
                         duration_ms: started.elapsed().as_millis() as u64,
                         output,
                         clean_exit: false,
@@ -250,7 +313,11 @@ fn supervise_child(
     SupervisedRun {
         receipt: SupervisorReceipt {
             command: command_argv,
-            termination: Termination::TimedOut,
+            termination: if timed_out {
+                Termination::TimedOut
+            } else {
+                Termination::Cancelled
+            },
             duration_ms: started.elapsed().as_millis() as u64,
             output,
             clean_exit: false,
@@ -410,5 +477,61 @@ mod tests {
         ));
         assert!(!run.receipt.clean_exit);
         assert!(run.status.is_none());
+    }
+
+    fn run_sh_cancellable(
+        cmd: &str,
+        limits: &SupervisorLimits,
+        cancel: &dyn Fn() -> bool,
+    ) -> SupervisedRun {
+        run_supervised_cancellable(
+            "/bin/sh",
+            &["-c", cmd],
+            std::env::temp_dir().as_path(),
+            limits,
+            cancel,
+        )
+    }
+
+    #[test]
+    fn cancel_before_start_never_runs_child_to_completion() {
+        let limits = SupervisorLimits {
+            timeout: Duration::from_secs(30),
+            term_grace: Duration::from_millis(500),
+            ..Default::default()
+        };
+        // Cancel is already true, so the first poll stops the child before it
+        // can finish; a 30s child guarantees the cancel branch is the one hit.
+        let started = Instant::now();
+        let run = run_sh_cancellable("sleep 30", &limits, &|| true);
+        assert_eq!(run.receipt.termination, Termination::Cancelled);
+        assert!(!run.receipt.clean_exit);
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cancel_polled_during_execution_terminates_in_flight_child() {
+        let limits = SupervisorLimits {
+            timeout: Duration::from_secs(30),
+            term_grace: Duration::from_millis(500),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let cancel_at = start + Duration::from_millis(120);
+        let should_cancel = move || Instant::now() >= cancel_at;
+        let started = Instant::now();
+        let run = run_sh_cancellable("sleep 30", &limits, &should_cancel);
+        assert_eq!(run.receipt.termination, Termination::Cancelled);
+        assert!(!run.receipt.clean_exit);
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cancel_false_completion_reports_clean_exit() {
+        let run = run_sh_cancellable("echo ran-to-completion", &default_limits(), &|| false);
+        assert_eq!(run.receipt.termination, Termination::Exited(0));
+        assert!(run.receipt.clean_exit);
+        assert!(run.receipt.output.contains("ran-to-completion"));
     }
 }
