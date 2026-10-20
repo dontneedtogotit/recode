@@ -1,6 +1,7 @@
 use super::domain::{EntityId, Result};
-use super::agent_runtime::{AgentRuntime, AgentTask};
+use super::plan_graph::PlanTask;
 use super::planning_circuit_breaker::PlanCircuitBreaker;
+use super::agent_runtime::{AgentRuntime, AgentTask};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlanStep {
@@ -32,6 +33,13 @@ pub enum StepProgress {
 }
 
 pub trait Planner {
+    /// Return a list of file‑level tasks (produces/consumes) derived from the plan.
+    /// The default implementation returns an empty list, which preserves existing
+    /// behaviour. Implementors may provide richer information to drive manifest
+    /// dependency wiring.
+    fn plan_file_graph(&self, _goal: &str) -> Result<Vec<PlanTask>> {
+        Ok(Vec::new())
+    }
     fn create_plan(&self, goal: &str) -> Result<Plan>;
     fn execute_plan(&self, plan: &mut Plan, runtime: &dyn AgentRuntime);
 
@@ -130,6 +138,32 @@ impl Planner for LocalPlanner {
         }
         plan.status = PlanStatus::Completed;
     }
+
+    /// Returns file-level tasks (produces/consumes) for reproducible manifest generation.
+    ///
+    /// For the default two-step plan this task graph maps each step to an output file.
+    /// > NOTE: This placeholder produces a task for the Execute plan steps step that generates the
+    /// > PROJECT.md artifact in the workspace (not imported). Future steps can refine this mapping.
+    fn plan_file_graph(&self, goal: &str) -> Result<Vec<PlanTask>> {
+        // For our fixed two-step plan:
+        // Step 0: "Analyze goal" produces nothing.
+        // Step 1: "Execute plan steps" produces the generated project output.
+        // The task maps the app entry point to its real Vite manifest
+        // dependencies: main.tsx imports App, and the scaffold configs
+        // (package.json / index.html) wrap it. Unmapped files keep the
+        // manifest's canned wave defaults.
+        let _ = goal;
+        Ok(vec![PlanTask {
+            id: EntityId::new().to_string(),
+            produces: vec!["src/main.tsx".into()],
+            consumes: vec![
+                "src/App.tsx".into(),
+                "src/App.css".into(),
+                "index.html".into(),
+                "package.json".into(),
+            ],
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +251,23 @@ mod tests {
         planner.execute_plan(&mut plan, &crate::agent_runtime::LocalAgentRuntime);
         assert_eq!(plan.steps[0].status, PlanStatus::Failed);
         assert_eq!(plan.status, PlanStatus::Failed);
+    }
+
+    #[test]
+    fn plan_file_graph_returns_tasks() {
+        let planner = LocalPlanner::new();
+        let tasks = planner.plan_file_graph("dummy").expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].produces, vec![String::from("src/main.tsx")]);
+        // Consumes must reference real Vite manifest paths only.
+        for dep in &tasks[0].consumes {
+            assert!(
+                crate::pipeline::VITE_PROJECT_FILES
+                    .iter()
+                    .any(|&(path, ..)| path == dep),
+                "planner consumes references unknown manifest path: {dep}"
+            );
+        }
     }
 
     #[test]

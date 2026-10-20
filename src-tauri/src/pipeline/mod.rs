@@ -20,6 +20,7 @@ use crate::self_heal::DefaultSelfHealService;
 
 pub mod engine;
 mod manifest;
+pub use manifest::VITE_PROJECT_FILES;
 mod prompts;
 mod generation_errors;
 pub(crate) mod ledger;
@@ -365,6 +366,12 @@ impl<'a> LocalPipelineService<'a> {
         // Thread the caller's verifier-subprocess consent through to the
         // engine so only `granted` ever spawns supervised commands.
         engine.execution_consent = input.execution_consent;
+        // Planner-supplied file graph (produces/consumes) feeds manifest
+        // `depends_on`; empty result keeps the canned wave defaults.
+        engine.plan_tasks = self
+            .planner
+            .plan_file_graph(&input.goal)
+            .unwrap_or_default();
         let should_cancel = || {
             cancel.is_some_and(|token| token.load(Ordering::SeqCst))
                 || control.is_some_and(PipelineControl::is_cancelling)

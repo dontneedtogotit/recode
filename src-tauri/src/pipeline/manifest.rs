@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::domain::{DomainError, Result};
 use crate::pipeline::PipelineInput;
 use serde::{Deserialize, Serialize};
@@ -84,11 +86,32 @@ impl LocalGenerationManifestService {
         Self
     }
 
-    pub fn build(&self, run_id: &str, input: &PipelineInput) -> Result<GenerationManifest> {
+    pub fn build(
+        &self,
+        run_id: &str,
+        input: &PipelineInput,
+        plan_tasks: &[crate::plan_graph::PlanTask],
+    ) -> Result<GenerationManifest> {
         let goal = input.goal.trim();
         if goal.is_empty() {
             return Err(DomainError::invalid_input("goal must not be empty"));
         }
+
+        // Planner-supplied file graph: a file's dependencies are the `consumes`
+        // of the plan tasks that `produces` it, filtered to paths actually in
+        // this manifest (dangling edges are a hard error in wave resolution).
+        let produces: HashMap<String, Vec<String>> = plan_tasks
+            .iter()
+            .flat_map(|task| {
+                task.produces
+                    .iter()
+                    .map(move |out| (out.clone(), task.consumes.clone()))
+            })
+            .collect();
+        let manifest_paths: HashSet<String> = VITE_PROJECT_FILES
+            .iter()
+            .map(|&(path, ..)| path.to_string())
+            .collect();
 
         let budget = ManifestBudget::default();
         let mut files = Vec::with_capacity(VITE_PROJECT_FILES.len().min(MAX_PROJECT_FILES));
@@ -113,7 +136,7 @@ impl LocalGenerationManifestService {
                 max_bytes,
                 status: ManifestFileStatus::Pending,
                 expected_loc,
-                depends_on: wave_dependency(path, wave),
+                depends_on: file_dependencies(path, wave, &produces, &manifest_paths),
             };
             total_tokens = total_tokens.saturating_add(file_max_tokens(&file));
             files.push(file);
@@ -156,9 +179,33 @@ impl LocalGenerationManifestService {
     }
 }
 
-/// Default dependency edges for the canned Vite project: source files in
-/// wave 1 depend on the wave-0 scaffold they import. A planner-supplied
-/// manifest passes its own `depends_on`; this only seeds the default set.
+/// Dependency edges for a manifest file. Planner-supplied tasks win: a file
+/// produced by a plan task depends on that task's `consumes`, filtered to
+/// paths actually present in the manifest (dangling edges are a hard error
+/// in wave resolution). Files the planner does not map fall back to the
+/// canned wave-0/1 scaffold edges.
+fn file_dependencies(
+    path: &str,
+    wave: u8,
+    produces: &HashMap<String, Vec<String>>,
+    manifest_paths: &HashSet<String>,
+) -> Vec<String> {
+    if wave == 0 {
+        return Vec::new();
+    }
+    if let Some(consumes) = produces.get(path) {
+        let mut deps: Vec<String> = consumes
+            .iter()
+            .filter(|dep| manifest_paths.contains(*dep))
+            .cloned()
+            .collect();
+        deps.sort();
+        deps.dedup();
+        return deps;
+    }
+    wave_dependency(path, wave)
+}
+
 fn wave_dependency(path: &str, wave: u8) -> Vec<String> {
     if wave == 0 {
         return Vec::new();
@@ -179,17 +226,84 @@ fn wave_dependency(path: &str, wave: u8) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn input(goal: &str) -> PipelineInput {
+        PipelineInput {
+            goal: goal.into(),
+            emit_events: false,
+            run_id: "run-1".into(),
+            project_id: None,
+            execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
+        }
+    }
+
+    #[test]
+    fn planner_tasks_override_depends_on() {
+        let service = LocalGenerationManifestService::new();
+        let tasks = vec![crate::plan_graph::PlanTask {
+            id: "t1".into(),
+            produces: vec!["src/main.tsx".into()],
+            consumes: vec![
+                "src/App.tsx".into(),
+                "index.html".into(),
+                "NOT_IN_MANIFEST.md".into(),
+            ],
+        }];
+        let manifest = service
+            .build("run-1", &input("build landing page"), &tasks)
+            .expect("manifest");
+        let main = manifest
+            .files
+            .iter()
+            .find(|f| f.path == "src/main.tsx")
+            .expect("main.tsx in manifest");
+        // Planner-supplied deps replace the canned wave edges, filtered to
+        // manifest paths (dangling edge dropped) and deduplicated.
+        assert_eq!(
+            main.depends_on,
+            vec!["index.html".to_string(), "src/App.tsx".to_string()]
+        );
+        // Unmapped files keep the canned defaults.
+        let app = manifest
+            .files
+            .iter()
+            .find(|f| f.path == "src/App.tsx")
+            .expect("App.tsx in manifest");
+        assert_eq!(app.depends_on, vec!["src/App.css".to_string()]);
+        // Wave resolution still accepts the graph (acyclic, in-manifest).
+        let dep_files: Vec<crate::pipeline::manifest_budget::DependencyFile> = manifest
+            .files
+            .iter()
+            .map(|f| crate::pipeline::manifest_budget::DependencyFile {
+                path: f.path.clone(),
+                depends_on: f.depends_on.clone(),
+            })
+            .collect();
+        crate::pipeline::manifest_budget::resolve_waves(&dep_files, MAX_WAVES)
+            .expect("planner-overridden graph must resolve into waves");
+    }
+
+    #[test]
+    fn empty_plan_tasks_keep_canned_wave_dependencies() {
+        let service = LocalGenerationManifestService::new();
+        let manifest = service
+            .build("run-1", &input("build landing page"), &[])
+            .expect("manifest");
+        let main = manifest
+            .files
+            .iter()
+            .find(|f| f.path == "src/main.tsx")
+            .expect("main.tsx in manifest");
+        assert_eq!(
+            main.depends_on,
+            vec!["src/App.tsx".to_string(), "index.html".to_string()]
+        );
+    }
+
     #[test]
     fn manifest_builds_from_goal() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         assert_eq!(manifest.run_id, "run-1");
         assert_eq!(manifest.files.len(), VITE_PROJECT_FILES.len());
@@ -210,6 +324,7 @@ mod tests {
                 project_id: None,
                 execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
             },
+            &[],
         );
         assert!(result.is_err());
     }
@@ -218,13 +333,7 @@ mod tests {
     fn manifest_orders_files_by_wave() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let mut last_wave = 0u8;
         for file in &manifest.files {
@@ -237,13 +346,7 @@ mod tests {
     fn manifest_assigns_expected_loc_and_derives_token_budget() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let app = manifest.files.iter().find(|f| f.path == "src/App.tsx").unwrap();
         assert_eq!(app.expected_loc, 220);
@@ -263,13 +366,7 @@ mod tests {
     fn manifest_wires_default_dependencies() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let main = manifest.files.iter().find(|f| f.path == "src/main.tsx").unwrap();
         assert!(main.depends_on.contains(&"src/App.tsx".to_string()));
@@ -285,13 +382,7 @@ mod tests {
     fn manifest_dependencies_form_acyclic_graph_resolvable_within_wave_limit() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let dep_files: Vec<super::super::manifest_budget::DependencyFile> = manifest
             .files
@@ -323,13 +414,7 @@ mod tests {
     fn manifest_budget_is_populated_and_within_limits() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let total_tokens: usize = manifest.files.iter().map(file_max_tokens).sum();
         let total_bytes: usize = manifest.files.iter().map(|f| f.max_bytes).sum();
@@ -346,13 +431,7 @@ mod tests {
     fn manifest_serializes_and_round_trips_with_new_fields() {
         let service = LocalGenerationManifestService::new();
         let manifest = service
-            .build("run-1", &PipelineInput {
-                goal: "build landing page".into(),
-                emit_events: false,
-                run_id: "run-1".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            })
+            .build("run-1", &input("build landing page"), &[])
             .expect("manifest");
         let json = serde_json::to_string(&manifest).unwrap();
         // The new fields appear in the wire format (or are skipped when empty).

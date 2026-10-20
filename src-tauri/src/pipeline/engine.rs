@@ -80,6 +80,9 @@ pub struct LocalPipelineEngine<'a> {
     /// Scoped consent for supervised verifier subprocesses; threaded through
     /// to [`Self::run_verification`]. Defaults to `NotSupplied`.
     pub execution_consent: crate::pipeline::supervisor::ExecutionConsent,
+    /// Planner-derived file tasks (produces/consumes) feeding manifest
+    /// `depends_on`; empty means canned wave defaults.
+    pub plan_tasks: Vec<crate::plan_graph::PlanTask>,
 }
 
 impl<'a> LocalPipelineEngine<'a> {
@@ -88,6 +91,7 @@ impl<'a> LocalPipelineEngine<'a> {
             event_bus,
             self_heal,
             execution_consent: Default::default(),
+            plan_tasks: Vec::new(),
         }
     }
 
@@ -195,7 +199,7 @@ impl<'a> LocalPipelineEngine<'a> {
             execution_consent: self.execution_consent,
         };
         let manifest_service = crate::pipeline::manifest::LocalGenerationManifestService::new();
-        let manifest = match manifest_service.build(&manifest_input.run_id, &manifest_input) {
+        let manifest = match manifest_service.build(&manifest_input.run_id, &manifest_input, &self.plan_tasks) {
             Ok(manifest) => manifest,
             Err(error) => {
                 let failed = vec![GeneratedFile {
