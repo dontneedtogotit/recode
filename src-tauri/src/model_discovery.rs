@@ -40,7 +40,9 @@ pub const ENDPOINTS: &[ProviderEndpoint] = &[
     },
     ProviderEndpoint {
         default_base: "https://openrouter.ai/api",
-        models_path: "/models",
+        // Full path from the host root: `models_url` keeps only scheme+host, so
+        // the entire API prefix must live here (not in default_base).
+        models_path: "/api/v1/models",
         env_var: "RECODE_OPENROUTER_API_KEY",
         openai_compatible: true,
     },
@@ -313,8 +315,8 @@ mod tests {
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
-            models_url("https://openrouter.ai/api", "/models"),
-            "https://openrouter.ai/models"
+            models_url("https://openrouter.ai/api", "/api/v1/models"),
+            "https://openrouter.ai/api/v1/models"
         );
         assert_eq!(
             models_url("http://127.0.0.1:8080/v1/", "/v1/models"),
