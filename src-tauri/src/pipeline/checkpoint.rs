@@ -43,6 +43,16 @@ impl CheckpointStatus {
             CheckpointStatus::Completed | CheckpointStatus::Failed | CheckpointStatus::Cancelled
         )
     }
+
+    /// Stable wire name matching the serde `lowercase` encoding.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckpointStatus::Running => "running",
+            CheckpointStatus::Completed => "completed",
+            CheckpointStatus::Failed => "failed",
+            CheckpointStatus::Cancelled => "cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

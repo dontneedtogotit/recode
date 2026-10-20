@@ -639,6 +639,47 @@ export async function getPipelineStatus(runId: string): Promise<PipelineStatusRe
   return { runId: response.run_id, active: response.active, state: response.state };
 }
 
+/** A single file entry in a generation checkpoint. */
+export type GenerationCheckpointFile = {
+  path: string;
+  sha256: string;
+  matchesDisk: boolean;
+};
+
+/** Inspectable partial-run state (generation checkpoint), or null when absent. */
+export type GenerationCheckpoint = {
+  attemptId: string;
+  status: string;
+  sequence: number;
+  savedAt: number;
+  files: GenerationCheckpointFile[];
+};
+
+export async function getGenerationCheckpoint(projectId: string): Promise<GenerationCheckpoint | null> {
+  const response = await invokeCommand<unknown>('get_generation_checkpoint', {
+    project_id: projectId,
+  });
+  if (!response || typeof response !== 'object') {
+    return null;
+  }
+  const record = response as Record<string, unknown>;
+  const files = Array.isArray(record.files) ? record.files : [];
+  return {
+    attemptId: typeof record.attempt_id === 'string' ? record.attempt_id : '',
+    status: typeof record.status === 'string' ? record.status : '',
+    sequence: typeof record.sequence === 'number' ? record.sequence : 0,
+    savedAt: typeof record.saved_at === 'number' ? record.saved_at : 0,
+    files: files.map((item) => {
+      if (!isRecord(item)) throw new Error('Invalid checkpoint file entry');
+      return {
+        path: typeof item.path === 'string' ? item.path : '',
+        sha256: typeof item.sha256 === 'string' ? item.sha256 : '',
+        matchesDisk: item.matches_disk === true,
+      };
+    }),
+  };
+}
+
 export async function getPipelineRunResult(runId: string): Promise<PipelineRun | null> {
   const response = await invokeCommand<unknown>('get_pipeline_result', { run_id: runId });
   if (!response) {

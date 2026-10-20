@@ -45,6 +45,7 @@ fn main() {
             recode::tauri_commands::reconcile_workspace,
             recode::tauri_commands::install_dependencies,
             recode::tauri_commands::verify_build,
+            recode::tauri_commands::get_generation_checkpoint,
             recode::tauri_commands::cancel_pipeline,
             recode::tauri_commands::pause_pipeline,
             recode::tauri_commands::resume_pipeline,

@@ -2,7 +2,7 @@ use crate::agent_runtime::AgentRuntime;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::domain::Result;
 use crate::event_bus::{
-    now_millis, DomainEvent, EventBus, TOPIC_PLAN_COMPLETED, TOPIC_PLAN_CREATED, TOPIC_PLAN_FAILED,
+    now_millis, DomainEvent, EventBus,    TOPIC_PLAN_COMPLETED, TOPIC_PIPELINE_CANCELLED, TOPIC_PLAN_CREATED, TOPIC_PLAN_FAILED,
     TOPIC_STEP_COMPLETED, TOPIC_STEP_STARTED,
 };
 use crate::planner::{Plan, PlanStep, Planner, StepProgress};
@@ -22,8 +22,8 @@ pub mod engine;
 mod manifest;
 mod prompts;
 mod generation_errors;
-mod ledger;
-mod checkpoint;
+pub(crate) mod ledger;
+pub(crate) mod checkpoint;
 mod validation;
 mod policy;
 mod repair;
@@ -323,6 +323,14 @@ impl<'a> LocalPipelineService<'a> {
         self.planner
             .execute_plan_with_progress(&mut plan, self.runtime, &mut report_step);
         if cancelled || control.is_some_and(PipelineControl::is_cancelling) {
+            // Single terminal event for the UI: exactly one cancellation
+            // signal on the stream (ROADMAP P0 item 5), before the Err.
+            if input.emit_events {
+                self.event_bus.publish(DomainEvent {
+                    topic: TOPIC_PIPELINE_CANCELLED.into(),
+                    payload: serde_json::json!({ "plan_id": plan.id.as_str(), "reason": "cancelled by user" }),
+                });
+            }
             return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
         }
 
@@ -600,6 +608,48 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn cancelled_pipeline_run_emits_single_terminal_event() {
+        // ROADMAP P0 item 5 (single terminal event): the UI sees exactly one
+        // cancellation signal on the stream — no completed, no duplicate.
+        let (event_bus, receiver) = EventBus::new();
+        let planner = LocalPlanner::new();
+        let service = LocalPipelineService::new(
+            &planner,
+            &LocalAgentRuntime,
+            &event_bus,
+            &DefaultSelfHealService,
+        );
+        let cancel = AtomicBool::new(true);
+        let result = service.run_with_cancellation(
+            PipelineInput {
+                goal: "cancel this".into(),
+                emit_events: true,
+                run_id: "run-cancel-event".into(),
+                project_id: None,
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
+            },
+            Some(&cancel),
+        );
+        assert!(result.is_err());
+        let topics: Vec<_> = receiver
+            .try_iter()
+            .map(|event| event.topic().to_string())
+            .collect();
+        let cancelled_count = topics
+            .iter()
+            .filter(|topic| topic.as_str() == TOPIC_PIPELINE_CANCELLED)
+            .count();
+        assert_eq!(
+            cancelled_count, 1,
+            "exactly one terminal cancellation event, got {topics:?}"
+        );
+        assert!(
+            !topics.iter().any(|topic| topic == TOPIC_PLAN_COMPLETED),
+            "cancelled run must not emit completion"
+        );
     }
 
     #[test]

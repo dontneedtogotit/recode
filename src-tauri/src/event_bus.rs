@@ -21,6 +21,9 @@ pub const TOPIC_PLAN_FAILED: &str = "pipeline.plan_failed";
 pub const TOPIC_STEP_STARTED: &str = "planner.step_started";
 pub const TOPIC_STEP_COMPLETED: &str = "pipeline.step_completed";
 pub const TOPIC_PLAN_COMPLETED: &str = "pipeline.plan_completed";
+/// Single terminal event for a user-cancelled run (ROADMAP P0 item 5): the
+/// UI observes exactly one cancellation signal on the event stream.
+pub const TOPIC_PIPELINE_CANCELLED: &str = "pipeline.cancelled";
 pub const TOPIC_RUNTIME_TASK: &str = "runtime.task";
 pub const TOPIC_SELF_HEAL: &str = "self_heal.repair";
 pub const TOPIC_MONITOR_EVENT: &str = "monitor.event";
@@ -89,6 +92,17 @@ impl PipelineEvent {
                         .get("plan_id")
                         .and_then(|value| value.as_str())
                         .unwrap_or("pipeline")
+                ),
+            ),
+            TOPIC_PIPELINE_CANCELLED => (
+                "warning".to_string(),
+                format!(
+                    "Pipeline cancelled: {}",
+                    event
+                        .payload
+                        .get("reason")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("cancelled by user")
                 ),
             ),
             _ => ("info".to_string(), event.topic.clone()),

@@ -690,6 +690,59 @@ pub struct BuildVerificationReport {
     pub summary: String,
 }
 
+/// Inspectable partial-run state (ROADMAP P0 item 5, transactional partial
+/// writes): the generation checkpoint of a registered workspace, including
+/// files durably recorded before a cancel/failure and whether each still
+/// matches its on-disk bytes. `None` when no checkpoint exists.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GenerationCheckpointInfo {
+    pub attempt_id: String,
+    pub status: String,
+    pub sequence: u64,
+    pub saved_at: u64,
+    pub files: Vec<GenerationCheckpointFileInfo>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GenerationCheckpointFileInfo {
+    pub path: String,
+    pub sha256: String,
+    /// True when the on-disk bytes still match the recorded checksum.
+    pub matches_disk: bool,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_generation_checkpoint(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<Option<GenerationCheckpointInfo>, String> {
+    let root = workspace_for_id(&app, &project_id)?;
+    // The checkpoint is keyed like the ledger: one generation root per
+    // workspace, reusing the ledger's project id.
+    let Some(checkpoint) =
+        crate::pipeline::checkpoint::load_checkpoint(&root, crate::pipeline::ledger::LEDGER_PROJECT_ID)
+    else {
+        return Ok(None);
+    };
+    let files = checkpoint
+        .files
+        .iter()
+        .map(|entry| GenerationCheckpointFileInfo {
+            path: entry.path.clone(),
+            sha256: entry.sha256.clone(),
+            matches_disk: crate::pipeline::ledger::file_sha256_beneath(&root, &entry.path)
+                .is_some_and(|sha| sha == entry.sha256),
+        })
+        .collect();
+    Ok(Some(GenerationCheckpointInfo {
+        attempt_id: checkpoint.attempt_id,
+        status: checkpoint.status.as_str().to_string(),
+        sequence: checkpoint.sequence,
+        saved_at: checkpoint.saved_at,
+        files,
+    }))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn verify_build(
     app: tauri::AppHandle,
