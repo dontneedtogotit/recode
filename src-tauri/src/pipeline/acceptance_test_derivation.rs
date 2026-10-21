@@ -140,7 +140,7 @@ impl AcceptanceTestDerivationService {
         &self,
         criterion: &AcceptanceCriterion,
         requirement: &FeatureRequirement,
-        framework: &str
+        _framework: &str
     ) -> String {
         let test_fn = "test";
         let describe_fn = "describe";

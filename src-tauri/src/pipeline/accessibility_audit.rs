@@ -129,7 +129,6 @@ fn detect_btn_text(content: &str, path: &str) -> Vec<AccessibilityFinding> {
     while let Some(start) = content_lower[pos..].find("<button") {
         let btn_start = pos + start;
         if let Some(end) = content_lower[btn_start..].find("</button>") {
-            let btn_tag = &content_lower[btn_start..btn_start + end + 9]; // include </button>
             let tag_content = &content[btn_start..btn_start + end];
             
             // Simple check: does it have content and no aria-label?

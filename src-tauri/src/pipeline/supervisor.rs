@@ -235,11 +235,9 @@ fn supervise_child(
     });
 
     let deadline = started + limits.timeout;
-    let mut terminated = false;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                terminated = true;
                 let output = drain_readers(&mut out_reader, &mut err_reader);
                 return SupervisedRun {
                     receipt: SupervisorReceipt {
@@ -275,7 +273,6 @@ fn supervise_child(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                terminated = true;
                 let output = drain_readers(&mut out_reader, &mut err_reader);
                 return SupervisedRun {
                     receipt: SupervisorReceipt {
@@ -303,11 +300,9 @@ fn supervise_child(
         thread::sleep(Duration::from_millis(25));
     }
 
-    if !terminated {
-        // Final best-effort: kill the group and wait so we never leak a child.
-        signal_group(pid, rustix::process::Signal::KILL);
-        let _ = child.wait();
-    }
+    // Final best-effort: kill the group and wait so we never leak a child.
+    signal_group(pid, rustix::process::Signal::KILL);
+    let _ = child.wait();
 
     let output = drain_readers(&mut out_reader, &mut err_reader);
     SupervisedRun {

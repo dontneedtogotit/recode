@@ -1605,9 +1605,7 @@ mod post_generation_validation_tests {
         let engine = LocalPipelineEngine::new(&bus, &heal);
         let root = tempfile::tempdir().unwrap();
 
-        let scaffold_count = crate::pipeline::scaffolder::SCAFFOLD_PATHS.len();
         let file_count = crate::pipeline::manifest::VITE_PROJECT_FILES.len();
-        let source_count = file_count - scaffold_count;
 
         // Seed a malformed package.json on disk — the scaffolder will
         // overwrite it with valid deterministic content.

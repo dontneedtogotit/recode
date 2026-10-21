@@ -336,7 +336,7 @@ impl DynamicOrchestrator {
         selection: &SelectionState,
         runtime: &dyn AgentRuntime,
         bus: Option<&EventBus>,
-        run_id: &str,
+        _run_id: &str,
     ) -> (Result<AgentResult, DomainError>, OrchestratorDecision) {
         let decision = self.decide(goal, step_description, catalog, selection);
         let task_id = EntityId::new();
@@ -751,7 +751,7 @@ mod tests {
             calls: std::sync::Mutex::new(Vec::new()),
         };
         let (bus, receiver) = EventBus::new();
-        orch.dispatch(
+        let _ = orch.dispatch(
             "goal",
             "Implement the login endpoint",
             &catalog,
@@ -760,7 +760,7 @@ mod tests {
             Some(&bus),
             "run-1",
         );
-        let mut topics: Vec<String> = receiver.try_iter().map(|e| e.topic).collect();
+        let topics: Vec<String> = receiver.try_iter().map(|e| e.topic).collect();
         // We expect at least the started + completed events.
         assert!(
             topics.contains(&TOPIC_STEP_STARTED.to_string()),
