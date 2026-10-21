@@ -195,7 +195,14 @@ impl LocalFileGenerationService {
         prompts: &[FileGenerationPrompt],
         should_cancel: &dyn Fn() -> bool,
     ) -> Result<Vec<GeneratedFile>> {
-        self.generate_and_write_tracked(workspace_root, prompts, should_cancel, &[], &mut |_, _| {})
+        self.generate_and_write_tracked(
+            workspace_root,
+            prompts,
+            should_cancel,
+            &[],
+            &mut |_, _| {},
+            &crate::pipeline::ExecutionLimits::default(),
+        )
     }
 
     /// Write path with a per-file progress callback: `on_file_written` fires
@@ -211,6 +218,7 @@ impl LocalFileGenerationService {
         should_cancel: &dyn Fn() -> bool,
         prior_summaries: &[(String, String)],
         on_file_written: &mut dyn FnMut(&str, &str),
+        execution_limits: &crate::pipeline::ExecutionLimits,
     ) -> Result<Vec<GeneratedFile>> {
         // Aggregate caps (P1.8): bound the total bytes and tokens this call
         // may produce, not just per-file limits. Reject upfront so a
@@ -240,6 +248,11 @@ impl LocalFileGenerationService {
             if should_cancel() {
                 return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
             }
+            // Wall-time budget (P1.7): same safe point as user cancellation —
+            // stop the run without partial writes once the deadline passes.
+            if execution_limits.is_expired() {
+                return Err(crate::pipeline::ExecutionLimits::expiry_error());
+            }
             let mut file = GeneratedFile {
                 path: prompt.file_path.clone(),
                 content: String::new(),
@@ -253,9 +266,19 @@ impl LocalFileGenerationService {
             } else {
                 Some(crate::pipeline::cross_file_context::build_cross_file_context(&file_summaries))
             };
-            let generated = self.generate_file_content(prompt, cross_context.as_deref(), should_cancel);
+            // In-flight concurrency guard (P1.7): the slot is held for the
+            // provider request only — under sequential execution the count
+            // can never exceed one; the guard is the seam wave-parallelism
+            // will acquire through.
+            let generated = {
+                let _in_flight = execution_limits.acquire_in_flight();
+                self.generate_file_content(prompt, cross_context.as_deref(), should_cancel)
+            };
             if should_cancel() {
                 return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
+            }
+            if execution_limits.is_expired() {
+                return Err(crate::pipeline::ExecutionLimits::expiry_error());
             }
             let content = match generated {
                 Ok(content) => content,
@@ -613,6 +636,47 @@ mod generation_retry_tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].path, "a.ts");
         assert_eq!(files[1].path, "b.ts");
+    }
+
+    #[test]
+    fn expired_wall_time_budget_stops_run_before_next_file() {
+        let root = tempfile::tempdir().unwrap();
+        let gateway = Arc::new(RecordingGateway::new(vec![
+            response(serde_json::json!("first file content"), "stop"),
+        ]));
+        let generator = LocalFileGenerationService::new(
+            LocalWorkspaceService,
+            gateway.clone(),
+            "test-model".into(),
+        );
+        let prompts = [
+            prompt(),
+            FileGenerationPrompt::new(
+                "src/main.ts".into(),
+                "typescript".into(),
+                "entry".into(),
+                "build it".into(),
+            ),
+        ];
+        let result = generator.generate_and_write_tracked(
+            root.path(),
+            &prompts,
+            &|| false,
+            &[],
+            &mut |_, _| {},
+            &crate::pipeline::ExecutionLimits::expired_for_test(),
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("wall-time"),
+            "deadline error must be distinct from user cancellation: {error}"
+        );
+        assert!(!error.contains("cancelled"));
+        // Provider was never hit: the deadline fires at the top of the first
+        // iteration, before any request is sent.
+        assert_eq!(gateway.budgets().len(), 0);
+        // Nothing was written: the write phase never starts on an expired run.
+        assert!(!root.path().join("README.md").exists());
     }
 
     #[test]

@@ -30,6 +30,8 @@ mod contract_lock;
 mod cross_file_context;
 mod edge_case_exercise;
 mod error_budget;
+mod execution_budget;
+pub(crate) use execution_budget::ExecutionLimits;
 mod error_handler;
 mod evidence;
 pub mod executor;

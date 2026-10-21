@@ -460,6 +460,7 @@ impl<'a> LocalPipelineEngine<'a> {
                         should_cancel,
                         &reused_summaries,
                         &mut persist_progress,
+                        &crate::pipeline::ExecutionLimits::from_budget(&manifest.budget),
                     ) {
                         Ok(results) => {
                             for file in results {
