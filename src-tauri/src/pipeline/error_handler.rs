@@ -3,6 +3,8 @@
 //! Classifies failure error messages and detects common failure patterns across generated files.
 //! Pure module — no stores, no DI, no I/O.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

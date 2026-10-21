@@ -61,6 +61,7 @@ pub struct PathValidationOptions {
 
 impl PathValidationOptions {
     pub fn auto_fix() -> Self { Self { auto_fix: true } }
+#[allow(dead_code)]  // test-only
     pub fn no_fix() -> Self { Self { auto_fix: false } }
 }
 
@@ -446,6 +447,7 @@ fn early_result(path: String, issues: Vec<PathIssue>) -> PathValidationResult {
 }
 
 /// Validate a batch of file paths, returning valid files with sanitized paths.
+#[allow(dead_code)]  // test-only
 pub fn validate_generated_file_paths(
     files: &[(String, String)], // (path, content)
 ) -> (Vec<(String, String)>, usize, usize, Vec<String>) {
@@ -482,6 +484,7 @@ pub fn validate_generated_file_paths(
 }
 
 /// Returns the canonical prompt rules for generated file paths.
+#[allow(dead_code)]  // test-only
 pub fn get_file_path_rules_prompt() -> String {
     [
         "",

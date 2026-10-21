@@ -3,6 +3,8 @@
 //! Generates acceptance tests from acceptance criteria independently of
 //! implementation.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use serde::{Deserialize, Serialize};
 
 // Types omitted for brevity for testing compilation

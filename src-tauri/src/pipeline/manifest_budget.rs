@@ -43,6 +43,7 @@ impl Default for ManifestBudget {
 
 /// A file with explicit dependencies, ready for wave assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]  // used by tests; production wiring pending
 pub struct DependencyFile {
     pub path: String,
     /// Paths this file imports or requires to exist before it can generate
@@ -57,6 +58,7 @@ pub struct DependencyFile {
 /// `Err(DomainError::invalid_input)` rather than spinning. The algorithm is
 /// Kahn's: repeatedly emit files whose dependencies are all already emitted,
 /// removing them from the pending set each pass.
+#[allow(dead_code)]  // used by tests; production wiring pending
 pub fn resolve_waves(files: &[DependencyFile], max_waves: usize) -> Result<Vec<(String, u8)>> {
     if files.is_empty() {
         return Ok(Vec::new());
@@ -155,6 +157,7 @@ pub fn validate_budget(
 }
 
 /// Build a path → wave index lookup from an ordered wave list.
+#[allow(dead_code)]  // used by tests; production wiring pending
 pub fn wave_map(ordered: &[(String, u8)]) -> BTreeMap<String, u8> {
     ordered.iter().cloned().collect()
 }

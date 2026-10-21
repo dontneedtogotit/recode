@@ -6,6 +6,7 @@
 //! Pure module — no stores, no DI, no I/O.
 
 /// Derive a human-readable purpose string from a file path.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn derive_purpose_from_path(file_path: &str) -> String {
     let parts: Vec<&str> = file_path.split('/').collect();
     let filename = parts.last().copied().unwrap_or(file_path);
@@ -41,6 +42,7 @@ pub fn derive_purpose_from_path(file_path: &str) -> String {
 }
 
 /// Infer a language string from a file path extension.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn infer_language(file_path: &str) -> String {
     let ext = file_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
@@ -61,6 +63,7 @@ pub fn infer_language(file_path: &str) -> String {
 }
 
 /// Estimate per-file timeout based on file complexity heuristics.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn estimate_file_timeout(
     path: &str,
     purpose: Option<&str>,
@@ -87,6 +90,7 @@ pub fn estimate_file_timeout(
 }
 
 /// Calculate a dynamic timeout based on total message content size.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn calculate_dynamic_timeout(
     total_content_chars: usize,
     fallback_ms: u64,
@@ -106,6 +110,7 @@ pub fn calculate_dynamic_timeout(
 }
 
 /// Strip markdown code fences from a raw LLM response.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn clean_json_response(raw: &str) -> String {
     let mut cleaned = raw.trim().to_string();
     if cleaned.starts_with("```") {
@@ -120,6 +125,7 @@ pub fn clean_json_response(raw: &str) -> String {
 }
 
 /// Budget-aware per-file token estimate.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn estimate_file_max_tokens(content: &str, planning_context: Option<&str>) -> usize {
     let base_lines = content.lines().count();
     let by_lines = std::cmp::max(2_000, base_lines * 80);

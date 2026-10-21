@@ -7,16 +7,19 @@
 
 use std::collections::BTreeSet;
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const NOISE_FILE_EXTENSIONS: &[&str] = &[
     ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
     ".woff", ".woff2", ".ttf", ".eot", ".pdf", ".zip", ".tar",
     ".gz", ".exe", ".dll", ".so", ".dylib", ".map",
 ];
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const NOISE_FILE_NAMES: &[&str] = &[
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "cargo.lock",
 ];
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const NOISE_FILE_DIRS: &[&str] = &[
     "dist/", "build/", ".git/", ".next/", ".cache/", "coverage/", "node_modules/",
 ];
@@ -29,6 +32,7 @@ const MAX_TYPE_FILES: usize = 8;
 const TYPE_FILE_RATIO: f64 = 0.5;
 
 /// True when a file should be rejected from strategic context (noise/binary/bloat).
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn is_noise_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     if NOISE_FILE_NAMES.iter().any(|name| lower.ends_with(name)) {
@@ -43,6 +47,7 @@ pub fn is_noise_file(path: &str) -> bool {
     NOISE_FILE_DIRS.iter().any(|dir| lower.contains(dir))
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn is_manifest_config(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with("package.json")
@@ -58,6 +63,7 @@ fn is_manifest_config(path: &str) -> bool {
         || lower.ends_with("pyproject.toml")
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn is_entrypoint(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let filename = lower.rsplit('/').next().unwrap_or(&lower);
@@ -71,6 +77,7 @@ fn is_entrypoint(path: &str) -> bool {
     )
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const STRATEGIC_KEYWORDS: &[&str] = &[
     "auth", "security", "api", "db", "database", "route",
     "controller", "service", "util", "lib", "hook",
@@ -78,6 +85,7 @@ const STRATEGIC_KEYWORDS: &[&str] = &[
 ];
 
 /// 4-Tier Strategic File Selection: manifests → entrypoints → domain services → core source.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn select_strategic_files(file_paths: &[String], max_files: usize) -> Vec<String> {
     let clean: Vec<&String> = file_paths.iter().filter(|p| !is_noise_file(p)).collect();
     let mut selected: BTreeSet<String> = BTreeSet::new();

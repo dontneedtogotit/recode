@@ -4,6 +4,8 @@
 //! Planned files and deterministic scaffold/manifest files are never dropped.
 //! Pure module — no stores, no DI, no I/O.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use std::collections::HashSet;
 
 /// Minimum auxiliary files allowed even if the plan is small.

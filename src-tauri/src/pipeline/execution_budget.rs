@@ -93,6 +93,7 @@ impl ExecutionLimits {
         InFlightGuard { limits: self }
     }
 
+#[allow(dead_code)]  // test-only
     fn current_in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
     }

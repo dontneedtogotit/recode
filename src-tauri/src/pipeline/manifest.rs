@@ -8,6 +8,7 @@ use super::manifest_budget::{ManifestBudget, max_tokens_for_loc};
 
 const MAX_PROJECT_FILES: usize = 12;
 const MAX_AGGREGATE_MANIFEST_BYTES: usize = 64 * 1024;
+#[allow(dead_code)]  // wave parallelism cap, wiring pending
 const MAX_WAVES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,6 +337,7 @@ impl LocalGenerationManifestService {
         })
     }
 
+#[allow(dead_code)]  // used by tests; production wiring pending
     pub fn mark_completed(&self, manifest: &mut GenerationManifest, path: &str) {
         for file in &mut manifest.files {
             if file.path == path {
@@ -345,6 +347,7 @@ impl LocalGenerationManifestService {
         }
     }
 
+#[allow(dead_code)]  // used by tests; production wiring pending
     pub fn mark_failed(&self, manifest: &mut GenerationManifest, path: &str, error: String) {
         for file in &mut manifest.files {
             if file.path == path {

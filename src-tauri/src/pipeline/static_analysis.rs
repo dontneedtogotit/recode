@@ -106,8 +106,10 @@ impl Default for StaticAnalysisOptions {
 pub struct StaticAnalysisService;
 
 impl StaticAnalysisService {
+#[allow(dead_code)]  // test-only
     pub fn new() -> Self { Self }
 
+#[allow(dead_code)]  // test-only
     pub fn detect_language(path: &str) -> &'static str {
         let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
@@ -219,6 +221,7 @@ impl StaticAnalysisService {
 
     /// Merge two analysis passes, taking the worst of both. Dedups by
     /// (file, line, severity, message).
+#[allow(dead_code)]  // test-only
     pub fn merge_results(
         earlier: Option<StaticAnalysisResult>,
         later: StaticAnalysisResult,
@@ -247,6 +250,7 @@ impl StaticAnalysisService {
         }
     }
 
+#[allow(dead_code)]  // test-only
     pub fn format_findings_for_review(findings: &[StaticAnalysisFinding]) -> Vec<String> {
         findings
             .iter()

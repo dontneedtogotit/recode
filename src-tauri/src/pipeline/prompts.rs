@@ -13,6 +13,7 @@ impl LocalPromptBuilderService {
     /// legacy engine run_internal smoke path). New generation paths should
     /// use [`Self::build_file_prompts`], which produces typed prompts that the
     /// live file generation service can execute.
+#[allow(dead_code)]  // test-only
     pub fn build(
         &self,
         manifest: &GenerationManifest,

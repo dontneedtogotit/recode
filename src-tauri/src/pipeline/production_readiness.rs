@@ -85,14 +85,6 @@ fn is_source_or_json(path: &str) -> bool {
     is_source_file(path) || path.ends_with(".json")
 }
 
-fn first_source_path<'a>(files: &'a [ProductionFile]) -> &'a str {
-    files
-        .iter()
-        .find(|f| is_source_file(&f.path))
-        .map(|f| f.path.as_str())
-        .or_else(|| files.first().map(|f| f.path.as_str()))
-        .unwrap_or("project")
-}
 
 fn detect_env_config(files: &[ProductionFile]) -> Vec<ProductionFinding> {
     let mut results = Vec::new();

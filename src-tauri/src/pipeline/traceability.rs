@@ -5,6 +5,8 @@
 //! corresponding implementation and test coverage.
 //! Pure module — no stores, no DI, no I/O.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

@@ -170,6 +170,7 @@ impl<'a> LocalPipelineEngine<'a> {
         ))
     }
 
+#[cfg(test)]
     fn generate_project_files_with_provider(
         &self,
         workspace_root: Option<&Path>,

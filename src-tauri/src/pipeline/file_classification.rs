@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]  // parity helper, wiring pending
 pub struct FileToGenerate {
     pub path: String,
     pub language: String,
@@ -15,6 +16,7 @@ pub struct FileToGenerate {
 
 /// Split files into generation waves: test files first, then contract files
 /// (types, interfaces, configs, routes), then consumer files.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn compute_generation_waves(files: &[FileToGenerate]) -> Vec<Vec<FileToGenerate>> {
     if files.len() <= 1 {
         return vec![files.to_vec()];
@@ -58,6 +60,7 @@ pub fn compute_generation_waves(files: &[FileToGenerate]) -> Vec<Vec<FileToGener
 }
 
 /// Determine if a file should have tests generated for it.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn is_testable_file(path: &str, language: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     // Test/spec files are test outputs, not inputs
@@ -80,9 +83,12 @@ pub fn is_testable_file(path: &str, language: &str) -> bool {
     }
     // Tooling configs
     let filename = lower.rsplit('/').next().unwrap_or(&lower);
-    if (filename.ends_with(".config.ts") || filename.ends_with(".config.js")
-        || filename.ends_with(".config.mts") || filename.ends_with(".config.mjs")
-        || filename.ends_with(".setup.ts") || filename.ends_with(".setup.js"))
+    if filename.ends_with(".config.ts")
+        || filename.ends_with(".config.js")
+        || filename.ends_with(".config.mts")
+        || filename.ends_with(".config.mjs")
+        || filename.ends_with(".setup.ts")
+        || filename.ends_with(".setup.js")
     {
         return false;
     }
@@ -91,6 +97,7 @@ pub fn is_testable_file(path: &str, language: &str) -> bool {
 }
 
 /// Determine if a file matches high-risk patterns requiring extra validation.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn is_high_risk_file(path: &str) -> bool {
     let high_risk_suffixes = [
         "index.ts", "index.tsx", "index.js", "index.jsx",

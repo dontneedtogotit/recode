@@ -3,6 +3,7 @@
 //! Path and identifier helpers for code the generator writes into a workspace.
 //! Pure and total: given any string returns something safe to write to disk.
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const ASSET_EXTENSIONS: &[&str] = &[
     ".css", ".scss", ".sass", ".less", ".styl", ".stylus",
     ".json", ".jsonc", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp",
@@ -12,34 +13,41 @@ const ASSET_EXTENSIONS: &[&str] = &[
     ".wasm", ".glsl", ".frag", ".vert",
 ];
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const CODE_EXTENSIONS: &[&str] = &[
     ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs",
 ];
 
+#[allow(dead_code)]  // parity helper, wiring pending
 const TEST_MARKERS: &[&str] = &[".test", ".spec"];
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn strip_query_fragment(specifier: &str) -> &str {
     let q = specifier.find(|c| c == '?' || c == '#').unwrap_or(specifier.len());
     &specifier[..q]
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn ends_with_any_ci(haystack: &str, suffixes: &[&str]) -> bool {
     let lower = haystack.to_ascii_lowercase();
     suffixes.iter().any(|s| lower.ends_with(s))
 }
 
 /// True when an import specifier points at an asset rather than a module.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn is_asset_import(specifier: &str) -> bool {
     let bare = strip_query_fragment(specifier);
     ends_with_any_ci(bare, ASSET_EXTENSIONS)
 }
 
 /// True when a path carries an extension the TS/JS toolchain compiles.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn has_code_extension(path: &str) -> bool {
     ends_with_any_ci(path, CODE_EXTENSIONS)
 }
 
 /// True when a path is already a test or spec file.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn is_test_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     for marker in TEST_MARKERS {
@@ -54,6 +62,7 @@ pub fn is_test_path(path: &str) -> bool {
 }
 
 /// Convert an arbitrary file basename into a valid JavaScript identifier.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn to_module_identifier(raw: &str, fallback: &str) -> String {
     let parts: Vec<&str> = raw
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
@@ -82,6 +91,7 @@ pub fn to_module_identifier(raw: &str, fallback: &str) -> String {
     }
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn replace_code_extension_with_test(filename: &str) -> String {
     let lower = filename.to_ascii_lowercase();
     for ext in CODE_EXTENSIONS {
@@ -94,6 +104,7 @@ fn replace_code_extension_with_test(filename: &str) -> String {
 }
 
 /// Derive the test file path for a source file. Idempotent.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn derive_test_path(source_path: &str, colocate: bool) -> String {
     if is_test_path(source_path) {
         return source_path.to_string();
@@ -119,6 +130,7 @@ pub fn derive_test_path(source_path: &str, colocate: bool) -> String {
     }
 }
 
+#[allow(dead_code)]  // parity helper, wiring pending
 fn strip_test_marker(filename: &str) -> String {
     let lower = filename.to_ascii_lowercase();
     for marker in TEST_MARKERS {
@@ -134,6 +146,7 @@ fn strip_test_marker(filename: &str) -> String {
 }
 
 /// The source path a test file covers.
+#[allow(dead_code)]  // parity helper, wiring pending
 pub fn source_path_for_test(test_path: &str) -> String {
     let segments: Vec<&str> = test_path.split('/').collect();
     let filename = segments.last().copied().unwrap_or(test_path);

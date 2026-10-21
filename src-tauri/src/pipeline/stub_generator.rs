@@ -5,6 +5,8 @@
 //! missing-import compile failures before the project ships to preview.
 //! Pure module — no stores, no DI, no I/O.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use serde::{Deserialize, Serialize};
 
 const DATA_FILE_EXTENSIONS: &[&str] = &[

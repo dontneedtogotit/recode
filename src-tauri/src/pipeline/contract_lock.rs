@@ -13,6 +13,8 @@
 //! matching), not a parser — it's a fast check that expected names appear in
 //! the expected files, not a type checker.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use super::types::GeneratedFile;
 use std::collections::HashMap;
 

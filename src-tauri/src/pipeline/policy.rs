@@ -3,6 +3,8 @@
 //! Maps a build verification policy to the set of required gates and their
 //! enforcement rules. Single source of truth for what "verified" means at each policy level.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BuildVerificationPolicy {

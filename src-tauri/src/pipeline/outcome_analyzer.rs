@@ -85,10 +85,12 @@ impl BuildOutcomeAnalyzer {
         }
     }
 
+#[allow(dead_code)]  // test-only
     pub fn get_history(&self) -> Vec<BuildOutcomeAnalysisInput> {
         self.history.clone()
     }
 
+#[allow(dead_code)]  // test-only
     pub fn clear(&mut self) {
         self.history.clear();
     }

@@ -3,6 +3,8 @@
 //! TTL-aware prompt template cache and content-hash based generation result cache.
 //! Prevents redundant LLM calls across rebuilds. Pure module — no I/O, no DI.
 
+#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};

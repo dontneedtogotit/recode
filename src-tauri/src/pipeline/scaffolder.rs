@@ -99,6 +99,7 @@ fn react_spa_dev_dependencies() -> Vec<(&'static str, &'static str)> {
 // ─── Package.json generator ─────────────────────────────────────────────────
 
 /// Generate a deterministic `package.json` for a Vite + React + TypeScript SPA.
+#[allow(dead_code)]  // test-only
 pub fn generate_package_json(project_name: &str, description: &str) -> String {
     generate_package_json_for_stack(
         project_name,

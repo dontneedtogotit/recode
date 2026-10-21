@@ -203,6 +203,7 @@ pub fn load_ledger(workspace_root: &Path, project_id: &str) -> Option<Generation
     Some(ledger)
 }
 
+#[allow(dead_code)]  // test-only
 pub fn ledger_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(LEDGER_DIR).join(LEDGER_FILE)
 }

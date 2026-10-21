@@ -134,6 +134,7 @@ impl GenerationCheckpoint {
     }
 }
 
+#[allow(dead_code)]  // test-only
 pub fn checkpoint_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(CHECKPOINT_DIR).join(CHECKPOINT_FILE)
 }
