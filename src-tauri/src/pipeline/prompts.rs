@@ -13,7 +13,10 @@ impl LocalPromptBuilderService {
     /// legacy engine run_internal smoke path). New generation paths should
     /// use [`Self::build_file_prompts`], which produces typed prompts that the
     /// live file generation service can execute.
-    pub fn build(&self, manifest: &GenerationManifest) -> Result<Vec<ManifestPrompt>, GenerationError> {
+    pub fn build(
+        &self,
+        manifest: &GenerationManifest,
+    ) -> Result<Vec<ManifestPrompt>, GenerationError> {
         if manifest.prompts.is_empty() {
             let mut prompts = Vec::new();
             for file in &manifest.files {
@@ -99,7 +102,11 @@ impl LocalPromptBuilderService {
             } else {
                 format!(
                     "{user_prompt}\n\nFile-type requirements:\n{}",
-                    type_reqs.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n")
+                    type_reqs
+                        .iter()
+                        .map(|r| format!("- {r}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 )
             };
             let mut prompt = FileGenerationPrompt::new(
@@ -160,7 +167,9 @@ mod tests {
         assert_eq!(prompts[0].file_path, "README.md");
         assert!(prompts[0].user_prompt.contains("build a landing page"));
         assert!(prompts[0].user_prompt.contains("Project file manifest"));
-        assert!(prompts[0].user_prompt.contains("You are responsible for generating exactly this one file: README.md"));
+        assert!(prompts[0]
+            .user_prompt
+            .contains("You are responsible for generating exactly this one file: README.md"));
     }
 
     #[test]
@@ -227,6 +236,162 @@ mod tests {
             "expected file-type requirements section, got: {}",
             prompts[0].user_prompt
         );
+    }
+
+    fn manifest_with_files(paths: &[&str]) -> GenerationManifest {
+        GenerationManifest {
+            run_id: "run-1".into(),
+            files: paths
+                .iter()
+                .map(|&path| ManifestFile {
+                    path: path.into(),
+                    language: "typescript".into(),
+                    purpose: format!("purpose of {path}"),
+                    wave: 1,
+                    max_bytes: 4096,
+                    status: ManifestFileStatus::Pending,
+                    expected_loc: 50,
+                    depends_on: Vec::new(),
+                })
+                .collect(),
+            prompts: Vec::new(),
+            budget: super::super::manifest_budget::ManifestBudget::default(),
+        }
+    }
+
+    #[test]
+    fn file_prompt_contract_empty_plan_error_is_exact() {
+        let service = LocalPromptBuilderService::new();
+        let manifest = GenerationManifest {
+            run_id: "run-empty".into(),
+            files: Vec::new(),
+            prompts: Vec::new(),
+            budget: super::super::manifest_budget::ManifestBudget::default(),
+        };
+        let error = service
+            .build_file_prompts(&manifest, "build a landing page")
+            .expect_err("empty manifest must be rejected");
+        assert!(
+            matches!(&error.kind, GenerationErrorKind::PromptFailed(message) if message == "manifest has no files"),
+            "wrong error kind: {error}"
+        );
+        // Full Display contract — IPC surfaces this string to callers.
+        assert_eq!(
+            error.to_string(),
+            "generation prompt failed: manifest has no files"
+        );
+    }
+
+    #[test]
+    fn file_prompt_contract_oversized_plan_error_is_exact() {
+        let service = LocalPromptBuilderService::new();
+        let paths: Vec<String> = (0..25).map(|i| format!("src/file{i}.ts")).collect();
+        let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let manifest = manifest_with_files(&path_refs);
+        let error = service
+            .build_file_prompts(&manifest, "build a landing page")
+            .expect_err("25-file manifest must be rejected");
+        assert!(
+            matches!(&error.kind, GenerationErrorKind::PromptFailed(message) if message == "manifest exceeds the generation request limit"),
+            "wrong error kind: {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "generation prompt failed: manifest exceeds the generation request limit"
+        );
+    }
+
+    #[test]
+    fn file_prompt_contract_boundary_24_files_is_accepted() {
+        let service = LocalPromptBuilderService::new();
+        let paths: Vec<String> = (0..24).map(|i| format!("src/file{i}.ts")).collect();
+        let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let manifest = manifest_with_files(&path_refs);
+        let prompts = service
+            .build_file_prompts(&manifest, "build a landing page")
+            .expect("24-file manifest is at the limit and must be accepted");
+        assert_eq!(prompts.len(), 24);
+    }
+
+    #[test]
+    fn file_prompt_contract_trims_goal_whitespace() {
+        let service = LocalPromptBuilderService::new();
+        let manifest = manifest_with_files(&["src/app.ts"]);
+        let prompts = service
+            .build_file_prompts(&manifest, "  build a landing page  \n")
+            .expect("file prompts");
+        assert!(
+            prompts[0]
+                .user_prompt
+                .starts_with("Project request: build a landing page"),
+            "goal must be trimmed into the prompt header: {}",
+            prompts[0].user_prompt
+        );
+    }
+
+    #[test]
+    fn file_prompt_contract_golden_full_text() {
+        let service = LocalPromptBuilderService::new();
+        // CSS entry so file-type requirements are exactly the single default
+        // line — the smallest deterministic golden prompt.
+        let manifest = GenerationManifest {
+            run_id: "run-golden".into(),
+            files: vec![ManifestFile {
+                path: "src/styles.css".into(),
+                language: "css".into(),
+                purpose: "Application stylesheet".into(),
+                wave: 1,
+                max_bytes: 4096,
+                status: ManifestFileStatus::Pending,
+                expected_loc: 120,
+                depends_on: Vec::new(),
+            }],
+            prompts: Vec::new(),
+            budget: super::super::manifest_budget::ManifestBudget::default(),
+        };
+        let prompts = service
+            .build_file_prompts(&manifest, "build a landing page")
+            .expect("golden prompts");
+        let golden = "Project request: build a landing page\n\n\
+Project file manifest — generate one file per request:\n\
+- src/styles.css (css): Application stylesheet\n\n\
+You are responsible for generating exactly this one file: src/styles.css (css).\n\
+Purpose: Application stylesheet\n\n\
+Return ONLY the raw, complete file content. Include all necessary imports and exports that are compatible with the manifest above. Do not wrap the response in markdown code fences, do not add explanations, and do not output other files.\n\n\
+Requirements:\n\
+- Use strict TypeScript (no any, no ts-ignore)\n\
+- Handle errors with structured error types\n\
+- Do NOT use mock shortcuts, TODO comments, placeholder strings, or throw new Error(\"Not implemented\")\n\
+- Generate COMPLETE file content — never truncate or omit sections\n\n\
+File-type requirements:\n\
+- Keep functions focused and small (single responsibility)";
+        assert_eq!(prompts[0].user_prompt, golden);
+        // The manifest's expected_loc drives the token budget:
+        // clamp(120 × 80, 2K, 16K) = 9600.
+        assert_eq!(prompts[0].max_tokens, 9_600);
+    }
+
+    #[test]
+    fn file_prompt_contract_scopes_each_file_and_shares_manifest() {
+        let service = LocalPromptBuilderService::new();
+        let manifest = manifest_with_files(&["src/a.ts", "src/b.ts"]);
+        let prompts = service
+            .build_file_prompts(&manifest, "build an app")
+            .expect("file prompts");
+        assert_eq!(prompts.len(), 2);
+        for (prompt, path) in prompts.iter().zip(["src/a.ts", "src/b.ts"]) {
+            assert_eq!(prompt.file_path, path);
+            assert!(prompt.user_prompt.contains(&format!(
+                "You are responsible for generating exactly this one file: {path} (typescript)."
+            )));
+            // Both prompts carry the full manifest section.
+            assert!(prompt
+                .user_prompt
+                .contains("- src/a.ts (typescript): purpose of src/a.ts"));
+            assert!(prompt
+                .user_prompt
+                .contains("- src/b.ts (typescript): purpose of src/b.ts"));
+        }
     }
 
     #[test]
