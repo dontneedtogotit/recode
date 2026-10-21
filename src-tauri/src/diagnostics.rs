@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

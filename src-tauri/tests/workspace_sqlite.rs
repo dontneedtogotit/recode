@@ -1,4 +1,4 @@
-use recode::persistence::{open_recode_db, ProjectRecord, ProjectRepository, SqliteProjectRepository};
+use recode::persistence::{open_recode_db, ProjectRepository, SqliteProjectRepository};
 use recode::workspace::{LocalWorkspaceService, WorkspaceService};
 use std::path::PathBuf;
 

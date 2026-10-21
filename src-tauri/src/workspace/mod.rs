@@ -2,7 +2,6 @@ use super::domain::{DomainError, Result};
 use self::safe_io::RootDir;
 use super::tauri_commands::capture_diagnostics;
 use rusqlite::OptionalExtension;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub mod safe_io;

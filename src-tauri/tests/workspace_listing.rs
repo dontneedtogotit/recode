@@ -1,6 +1,4 @@
 use recode::workspace::{LocalWorkspaceService, WorkspaceService};
-use std::path::PathBuf;
-
 #[test]
 fn workspace_listing_roundtrip() {
     let temp = std::env::temp_dir().join("recode-workspace-list");

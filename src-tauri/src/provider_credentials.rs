@@ -19,7 +19,6 @@
 //! All operations are synchronous (rusqlite), matching the crate's blocking
 //! architecture.
 use std::collections::HashMap;
-use std::path::Path;
 
 /// Default database file (relative), mirroring `provider_settings/commands.rs`.
 pub const DEFAULT_CREDENTIAL_DB: &str = "recode.db";
@@ -274,7 +273,7 @@ fn hint(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::path::Path;
 
     fn temp_db() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();

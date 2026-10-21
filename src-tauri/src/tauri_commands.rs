@@ -4,7 +4,7 @@ use crate::agent_runtime::LocalAgentRuntime;
 use crate::dev_server::{
     DevServerStatus, DevServerStatusReport, DevServerStatusReporter, LocalDevServerStatusReporter,
 };
-use crate::gateway::{DefaultGatewayService, GatewayRequest, GatewayResponse, GatewayService};
+use crate::gateway::{GatewayRequest, GatewayResponse};
 use crate::git::{GitCommitOutput, GitInitOutput, GitService, GitStatus, LocalGitService};
 use crate::persistence::{AgentTaskRunRecord, PlanRecord};
 use crate::pipeline::{LocalPipelineService, PipelineControl, PipelineInput, PipelineRun};
@@ -29,7 +29,6 @@ use crate::workspace::{
 };
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Instant, SystemTime};
 use tauri::Emitter;
 use tauri::Manager;
 

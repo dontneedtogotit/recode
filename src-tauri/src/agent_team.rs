@@ -1,4 +1,4 @@
-use super::domain::{DomainError, EntityId, Result};
+use super::domain::{DomainError, Result};
 use rusqlite::Connection;
 use std::time::SystemTime;
 

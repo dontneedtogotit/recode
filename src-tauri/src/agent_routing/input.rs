@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
 
 use crate::agent_routing::descriptors::{AgentRoutingCatalog, RoutableTask};
 
@@ -218,7 +217,6 @@ fn infer_planning_focus(description: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn build_default_input_preserves_task_description() {

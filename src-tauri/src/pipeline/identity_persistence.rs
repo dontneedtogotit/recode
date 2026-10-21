@@ -1,7 +1,6 @@
 use crate::domain::{DomainError, Result};
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
-use serde::{Deserialize, Serialize};
 
 use crate::pipeline::identity::{PlanRevision, RevisionStatus, RunIdentity, WorkspaceGrant};
 

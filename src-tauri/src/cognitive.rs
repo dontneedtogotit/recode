@@ -70,8 +70,6 @@ impl CognitiveEngine for LocalCognitiveEngine {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::DomainError;
-
     #[test]
     fn cognitive_reflection_compiles() {
         struct Stub;

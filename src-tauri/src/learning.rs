@@ -329,11 +329,10 @@ impl<R: PatternRepository> LearningPatternService<R> {
     }
 }
 
-use std::sync::Arc;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[derive(Debug, Clone)]
     struct InMemoryPatternRepository {

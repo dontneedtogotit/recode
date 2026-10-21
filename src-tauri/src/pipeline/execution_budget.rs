@@ -15,7 +15,7 @@
 //! parallel. Both violations are `DomainError::conflict` (run-state), distinct
 //! from user cancellation by message.
 
-use crate::domain::{DomainError, Result};
+use crate::domain::DomainError;
 use crate::pipeline::manifest_budget::ManifestBudget;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

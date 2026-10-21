@@ -1,6 +1,6 @@
 use crate::domain::Result;
 use crate::gateway::{GatewayRequest, GatewayService};
-use crate::workspace::{LocalWorkspaceService, ProjectFile, WorkspaceService};
+use crate::workspace::LocalWorkspaceService;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::path::Path;

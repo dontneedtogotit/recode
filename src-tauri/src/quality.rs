@@ -1,8 +1,6 @@
 use super::domain::DomainError;
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -391,6 +389,7 @@ impl<R: QualityRepository> QualityScanner<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::collections::HashMap;
 
     #[derive(Debug, Clone)]

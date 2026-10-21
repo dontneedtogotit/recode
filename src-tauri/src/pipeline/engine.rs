@@ -948,7 +948,6 @@ impl<'a> LocalPipelineEngine<'a> {
 
 #[cfg(test)]
 mod verification_outcome_tests {
-    use crate::pipeline::outcome::REQUIRED_GATES;
     use std::sync::atomic::Ordering;
     use super::*;
     use crate::gateway::{GatewayRequest, GatewayResponse, GatewayService};

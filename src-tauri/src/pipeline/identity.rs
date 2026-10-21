@@ -1,6 +1,5 @@
 //! Immutable identity records for plans, workspace grants and runs.
 //! These types provide audit fields only; they do not authorize replay.
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlanRevision {
