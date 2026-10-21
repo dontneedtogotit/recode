@@ -250,20 +250,23 @@ pub struct CreateManagedWorkspaceInput {
     pub id: String,
 }
 
-fn projects_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn projects_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|path| path.join("projects"))
         .map_err(|error| format!("app data directory unavailable: {error}"))
 }
 
-fn workspace_for_id(app: &tauri::AppHandle, id: &str) -> Result<std::path::PathBuf, String> {
+fn workspace_for_id<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+) -> Result<std::path::PathBuf, String> {
     registered_workspace_root(&projects_dir(app)?, id).map_err(|error| ipc_error(error.into()))
 }
 
 #[tauri::command]
-pub fn create_workspace(
-    app: tauri::AppHandle,
+pub fn create_workspace<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     input: CreateManagedWorkspaceInput,
 ) -> Result<TauriCreateWorkspaceResponse, String> {
     let service = LocalWorkspaceService;
@@ -283,7 +286,9 @@ pub struct TauriWorkspaceInfo {
 }
 
 #[tauri::command]
-pub fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<TauriWorkspaceInfo>, String> {
+pub fn list_workspaces<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<TauriWorkspaceInfo>, String> {
     let root = projects_dir(&app)?;
     if !root.exists() {
         return Ok(Vec::new());
@@ -306,8 +311,8 @@ pub fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<TauriWorkspaceInfo>,
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn write_project_file(
-    app: tauri::AppHandle,
+pub fn write_project_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     workspace_id: String,
     file: ProjectFile,
 ) -> Result<(), String> {
@@ -318,8 +323,8 @@ pub fn write_project_file(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn read_project_file(
-    app: tauri::AppHandle,
+pub fn read_project_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     workspace_id: String,
     path: String,
 ) -> Result<Option<ProjectFile>, String> {
@@ -330,8 +335,8 @@ pub fn read_project_file(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_project_files(
-    app: tauri::AppHandle,
+pub fn list_project_files<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     workspace_id: String,
 ) -> Result<Vec<ProjectFile>, String> {
     let service = LocalWorkspaceService;
@@ -341,8 +346,8 @@ pub fn list_project_files(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn validate_workspace_path(
-    app: tauri::AppHandle,
+pub fn validate_workspace_path<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     workspace_id: String,
     path: String,
 ) -> Result<PathValidation, String> {
