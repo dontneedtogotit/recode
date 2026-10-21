@@ -1,7 +1,7 @@
+use super::agent_runtime::{AgentRuntime, AgentTask};
 use super::domain::{EntityId, Result};
 use super::plan_graph::PlanTask;
 use super::planning_circuit_breaker::PlanCircuitBreaker;
-use super::agent_runtime::{AgentRuntime, AgentTask};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlanStep {
@@ -67,7 +67,9 @@ pub struct LocalPlanner {
 
 impl LocalPlanner {
     pub fn new() -> Self {
-        Self { circuit_breaker: PlanCircuitBreaker::new() }
+        Self {
+            circuit_breaker: PlanCircuitBreaker::new(),
+        }
     }
 }
 
@@ -111,7 +113,10 @@ impl Planner for LocalPlanner {
         plan.status = PlanStatus::InProgress;
         for step in &mut plan.steps {
             if step.status == PlanStatus::Pending {
-                if self.circuit_breaker.should_skip_phase(&step.description, "", plan.id.as_str()) {
+                if self
+                    .circuit_breaker
+                    .should_skip_phase(&step.description, "", plan.id.as_str())
+                {
                     step.status = PlanStatus::Failed;
                     plan.status = PlanStatus::Failed;
                     return;
@@ -148,20 +153,35 @@ impl Planner for LocalPlanner {
         // For our fixed two-step plan:
         // Step 0: "Analyze goal" produces nothing.
         // Step 1: "Execute plan steps" produces the generated project output.
-        // The task maps the app entry point to its real Vite manifest
-        // dependencies: main.tsx imports App, and the scaffold configs
-        // (package.json / index.html) wrap it. Unmapped files keep the
-        // manifest's canned wave defaults.
-        let _ = goal;
+        // The task maps the stack's entry point to its real manifest
+        // dependencies: the entry imports the app module, and the scaffold
+        // configs (package.json / index.html) wrap it. Unmapped files keep
+        // the manifest's canned wave defaults.
+        let stack = crate::pipeline::stack::ProjectStack::detect(goal);
+        let (produces, consumes) = match stack {
+            crate::pipeline::stack::ProjectStack::ReactVite => (
+                vec!["src/main.tsx".into()],
+                vec![
+                    "src/App.tsx".into(),
+                    "src/App.css".into(),
+                    "index.html".into(),
+                    "package.json".into(),
+                ],
+            ),
+            crate::pipeline::stack::ProjectStack::VanillaVite => (
+                vec!["src/main.ts".into()],
+                vec![
+                    "src/app.ts".into(),
+                    "src/styles.css".into(),
+                    "index.html".into(),
+                    "package.json".into(),
+                ],
+            ),
+        };
         Ok(vec![PlanTask {
             id: EntityId::new().to_string(),
-            produces: vec!["src/main.tsx".into()],
-            consumes: vec![
-                "src/App.tsx".into(),
-                "src/App.css".into(),
-                "index.html".into(),
-                "package.json".into(),
-            ],
+            produces,
+            consumes,
         }])
     }
 }
@@ -224,7 +244,11 @@ mod tests {
         let mut plan = planner.create_plan("build landing page").expect("plan");
         planner.execute_plan(&mut plan, &crate::agent_runtime::LocalAgentRuntime);
         assert_eq!(plan.status, PlanStatus::Completed);
-        assert!(plan.steps.iter().all(|step| step.status == PlanStatus::Completed));
+        assert!(
+            plan.steps
+                .iter()
+                .all(|step| step.status == PlanStatus::Completed)
+        );
     }
 
     #[test]
@@ -236,18 +260,29 @@ mod tests {
         let metrics = vec![
             crate::planning_circuit_breaker::PlanMetrics {
                 status: crate::planning_circuit_breaker::PlanRunStatus::Failed,
-                phases: std::collections::HashMap::from([(phase.clone(), Some(crate::planning_circuit_breaker::PhaseStatus::Failed))]),
+                phases: std::collections::HashMap::from([(
+                    phase.clone(),
+                    Some(crate::planning_circuit_breaker::PhaseStatus::Failed),
+                )]),
             },
             crate::planning_circuit_breaker::PlanMetrics {
                 status: crate::planning_circuit_breaker::PlanRunStatus::Failed,
-                phases: std::collections::HashMap::from([(phase.clone(), Some(crate::planning_circuit_breaker::PhaseStatus::Failed))]),
+                phases: std::collections::HashMap::from([(
+                    phase.clone(),
+                    Some(crate::planning_circuit_breaker::PhaseStatus::Failed),
+                )]),
             },
             crate::planning_circuit_breaker::PlanMetrics {
                 status: crate::planning_circuit_breaker::PlanRunStatus::Failed,
-                phases: std::collections::HashMap::from([(phase, Some(crate::planning_circuit_breaker::PhaseStatus::Failed))]),
+                phases: std::collections::HashMap::from([(
+                    phase,
+                    Some(crate::planning_circuit_breaker::PhaseStatus::Failed),
+                )]),
             },
         ];
-        planner.circuit_breaker.load_recent_metrics(&project_id, metrics);
+        planner
+            .circuit_breaker
+            .load_recent_metrics(&project_id, metrics);
         planner.execute_plan(&mut plan, &crate::agent_runtime::LocalAgentRuntime);
         assert_eq!(plan.steps[0].status, PlanStatus::Failed);
         assert_eq!(plan.status, PlanStatus::Failed);
@@ -266,6 +301,24 @@ mod tests {
                     .iter()
                     .any(|&(path, ..)| path == dep),
                 "planner consumes references unknown manifest path: {dep}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_file_graph_maps_vanilla_goals_to_vanilla_paths() {
+        let planner = LocalPlanner::new();
+        let tasks = planner
+            .plan_file_graph("build a vanilla typescript static site")
+            .expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].produces, vec![String::from("src/main.ts")]);
+        for dep in &tasks[0].consumes {
+            assert!(
+                crate::pipeline::VANILLA_PROJECT_FILES
+                    .iter()
+                    .any(|&(path, ..)| path == dep),
+                "planner consumes references unknown vanilla manifest path: {dep}"
             );
         }
     }

@@ -1,15 +1,15 @@
 use crate::agent_runtime::AgentRuntime;
-use std::sync::atomic::{AtomicBool, Ordering};
 use crate::domain::Result;
 use crate::event_bus::{
-    now_millis, DomainEvent, EventBus,    TOPIC_PLAN_COMPLETED, TOPIC_PIPELINE_CANCELLED, TOPIC_PLAN_CREATED, TOPIC_PLAN_FAILED,
-    TOPIC_STEP_COMPLETED, TOPIC_STEP_STARTED,
+    now_millis, DomainEvent, EventBus, TOPIC_PIPELINE_CANCELLED, TOPIC_PLAN_COMPLETED,
+    TOPIC_PLAN_CREATED, TOPIC_PLAN_FAILED, TOPIC_STEP_COMPLETED, TOPIC_STEP_STARTED,
 };
 use crate::planner::{Plan, PlanStep, Planner, StepProgress};
 use crate::runtime_monitor::MonitorEvent;
 use crate::self_heal::{RepairAction, SelfHealService};
-use std::sync::{Condvar, Mutex};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 
 #[cfg(test)]
 use crate::agent_runtime::LocalAgentRuntime;
@@ -20,51 +20,52 @@ use crate::self_heal::DefaultSelfHealService;
 
 pub mod engine;
 mod manifest;
-pub use manifest::VITE_PROJECT_FILES;
-mod prompts;
-mod generation_errors;
-pub(crate) mod ledger;
-pub(crate) mod checkpoint;
-mod validation;
-mod policy;
-mod repair;
-mod error_handler;
-mod report;
-mod outcome_analyzer;
-mod content_type;
-mod file_budget;
-mod metrics;
-mod pattern_learning;
-mod evidence;
-mod traceability;
-mod file_classification;
-mod adaptation_policy;
-mod helpers;
-mod file_path_validator;
-mod prompt_cache;
-mod generated_module_paths;
-mod static_analysis;
-mod stub_generator;
-mod cross_file_context;
-mod error_budget;
-mod manifest_budget;
-mod mental_simulator;
-mod scaffolder;
-mod contract_lock;
-mod production_readiness;
+pub use manifest::{VANILLA_PROJECT_FILES, VITE_PROJECT_FILES};
 mod acceptance_test_derivation;
-mod edge_case_exercise;
 mod accessibility_audit;
-mod ux_consistency;
-pub mod progress_tracker;
+mod adaptation_policy;
+pub(crate) mod checkpoint;
+mod content_type;
+mod contract_lock;
+mod cross_file_context;
+mod edge_case_exercise;
+mod error_budget;
+mod error_handler;
+mod evidence;
 pub mod executor;
-pub mod types;
-pub mod verify;
-pub mod supervisor;
-pub mod verifiers;
-mod outcome;
+mod file_budget;
+mod file_classification;
+mod file_path_validator;
+mod generated_module_paths;
+mod generation_errors;
+mod helpers;
 pub mod identity;
 pub mod identity_persistence;
+pub(crate) mod ledger;
+mod manifest_budget;
+mod mental_simulator;
+mod metrics;
+mod outcome;
+mod outcome_analyzer;
+mod pattern_learning;
+mod policy;
+mod production_readiness;
+pub mod progress_tracker;
+mod prompt_cache;
+mod prompts;
+mod repair;
+mod report;
+mod scaffolder;
+pub mod stack;
+mod static_analysis;
+mod stub_generator;
+pub mod supervisor;
+mod traceability;
+pub mod types;
+mod ux_consistency;
+mod validation;
+pub mod verifiers;
+pub mod verify;
 
 use crate::pipeline::engine::LocalPipelineEngine;
 
@@ -140,16 +141,25 @@ pub struct PipelineControl {
 }
 
 impl Default for PipelineControl {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PipelineControl {
     pub fn new() -> Self {
-        Self { state: Mutex::new(ControlState::Running), wake: Condvar::new() }
+        Self {
+            state: Mutex::new(ControlState::Running),
+            wake: Condvar::new(),
+        }
     }
 
     pub fn state(&self) -> &'static str {
-        match *self.state.lock().unwrap_or_else(|poison| poison.into_inner()) {
+        match *self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+        {
             ControlState::Running => "running",
             ControlState::PauseRequested => "pausing",
             ControlState::Paused => "paused",
@@ -158,37 +168,64 @@ impl PipelineControl {
     }
 
     pub fn pause(&self) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-        if *state != ControlState::Running { return false; }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if *state != ControlState::Running {
+            return false;
+        }
         *state = ControlState::PauseRequested;
         true
     }
 
     pub fn resume(&self) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-        if !matches!(*state, ControlState::PauseRequested | ControlState::Paused) { return false; }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !matches!(*state, ControlState::PauseRequested | ControlState::Paused) {
+            return false;
+        }
         *state = ControlState::Running;
         self.wake.notify_all();
         true
     }
 
     pub fn abort(&self) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-        if *state == ControlState::Cancelling { return false; }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if *state == ControlState::Cancelling {
+            return false;
+        }
         *state = ControlState::Cancelling;
         self.wake.notify_all();
         true
     }
 
     pub fn is_cancelling(&self) -> bool {
-        *self.state.lock().unwrap_or_else(|poison| poison.into_inner()) == ControlState::Cancelling
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            == ControlState::Cancelling
     }
 
     pub fn wait_if_paused(&self) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|poison| poison.into_inner());
-        if *state == ControlState::PauseRequested { *state = ControlState::Paused; }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if *state == ControlState::PauseRequested {
+            *state = ControlState::Paused;
+        }
         while *state == ControlState::Paused {
-            state = self.wake.wait(state).unwrap_or_else(|poison| poison.into_inner());
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poison| poison.into_inner());
         }
         *state != ControlState::Cancelling
     }
@@ -251,7 +288,11 @@ impl<'a> LocalPipelineService<'a> {
         self.run_internal(input, cancel, None)
     }
 
-    pub fn run_with_control(&self, input: PipelineInput, control: &PipelineControl) -> Result<PipelineRun> {
+    pub fn run_with_control(
+        &self,
+        input: PipelineInput,
+        control: &PipelineControl,
+    ) -> Result<PipelineRun> {
         self.run_internal(input, None, Some(control))
     }
 
@@ -290,7 +331,9 @@ impl<'a> LocalPipelineService<'a> {
                 cancelled = true;
                 return false;
             }
-            if progress == StepProgress::Started && control.is_some_and(|token| !token.wait_if_paused()) {
+            if progress == StepProgress::Started
+                && control.is_some_and(|token| !token.wait_if_paused())
+            {
                 cancelled = true;
                 return false;
             }
@@ -332,7 +375,9 @@ impl<'a> LocalPipelineService<'a> {
                     payload: serde_json::json!({ "plan_id": plan.id.as_str(), "reason": "cancelled by user" }),
                 });
             }
-            return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
+            return Err(crate::domain::DomainError::conflict(
+                "pipeline cancelled by user",
+            ));
         }
 
         if plan.status != crate::planner::PlanStatus::Completed {
@@ -342,7 +387,9 @@ impl<'a> LocalPipelineService<'a> {
                     payload: serde_json::json!({ "plan_id": plan.id.as_str(), "error": "step execution failed" }),
                 });
             }
-            return Err(crate::domain::DomainError::internal("pipeline step execution failed"));
+            return Err(crate::domain::DomainError::internal(
+                "pipeline step execution failed",
+            ));
         }
 
         if input.emit_events {
@@ -377,12 +424,19 @@ impl<'a> LocalPipelineService<'a> {
                 || control.is_some_and(PipelineControl::is_cancelling)
         };
         if should_cancel() {
-            return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
+            return Err(crate::domain::DomainError::conflict(
+                "pipeline cancelled by user",
+            ));
         }
-        let (generated_files, failed_files, outcome) =
-            engine.generate_project_files_cancellable(self.workspace_root.as_deref(), &input.goal, &should_cancel);
+        let (generated_files, failed_files, outcome) = engine.generate_project_files_cancellable(
+            self.workspace_root.as_deref(),
+            &input.goal,
+            &should_cancel,
+        );
         if should_cancel() {
-            return Err(crate::domain::DomainError::conflict("pipeline cancelled by user"));
+            return Err(crate::domain::DomainError::conflict(
+                "pipeline cancelled by user",
+            ));
         }
         let verification_results = outcome.verification_results.clone();
         let repair_results = outcome.repair_results.clone();
@@ -433,7 +487,9 @@ mod tests {
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         struct Capture(Arc<Mutex<Vec<String>>>);
         impl tracing::Subscriber for Capture {
-            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool { true }
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
             fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
                 let meta = span.metadata();
                 if meta.fields().field("run_id").is_some() {
@@ -445,7 +501,8 @@ mod tests {
                 tracing::span::Id::from_u64(1)
             }
             fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
             fn event(&self, _event: &tracing::Event<'_>) {}
@@ -458,11 +515,7 @@ mod tests {
                 self.0.push_str(value);
                 self.0.push('\n');
             }
-            fn record_debug(
-                &mut self,
-                field: &tracing::field::Field,
-                value: &dyn std::fmt::Debug,
-            ) {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 self.0.push_str(field.name());
                 self.0.push('=');
                 self.0.push_str(&format!("{:?}", value));
@@ -487,11 +540,15 @@ mod tests {
             },
             &control,
         );
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("cancel"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("cancel"));
         let spans = captured.lock().unwrap();
-        let run_span = spans
-            .iter()
-            .find(|s| s.contains("run_id=span-cancel-run") && s.contains("project_id=span-project"));
+        let run_span = spans.iter().find(|s| {
+            s.contains("run_id=span-cancel-run") && s.contains("project_id=span-project")
+        });
         assert!(
             run_span.is_some(),
             "run_internal span must carry run_id/project_id; captured: {:?}",
@@ -508,11 +565,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let service = LocalPipelineService::new(&planner, &LocalAgentRuntime, &event_bus, &healer)
             .with_workspace_root(root.path().to_path_buf());
-        let result = service.run_with_control(PipelineInput {
-            goal: "build a page".into(), emit_events: false, run_id: "cancel-before-generation".into(),
-            project_id: Some("registered".into()),
-            execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-        }, &control);
+        let result = service.run_with_control(
+            PipelineInput {
+                goal: "build a page".into(),
+                emit_events: false,
+                run_id: "cancel-before-generation".into(),
+                project_id: Some("registered".into()),
+                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
+            },
+            &control,
+        );
         assert!(result.unwrap_err().to_string().contains("cancelled"));
         assert!(!root.path().join("README.md").exists());
         assert!(!root.path().join("src/main.ts").exists());
@@ -528,7 +590,8 @@ mod tests {
             &LocalAgentRuntime,
             &event_bus,
             &DefaultSelfHealService,
-        ).with_workspace_root(root.path().to_path_buf());
+        )
+        .with_workspace_root(root.path().to_path_buf());
         assert_eq!(service.workspace_root.as_deref(), Some(root.path()));
     }
 
@@ -553,8 +616,14 @@ mod tests {
             .expect("pipeline run");
         assert_eq!(run.plan.status, PlanStatus::Completed);
         assert_eq!(run.events.len(), 5);
-        assert!(run.events.iter().any(|event| event.message.starts_with("Step started:")));
-        assert!(run.events.iter().any(|event| event.message.starts_with("Step completed:")));
+        assert!(run
+            .events
+            .iter()
+            .any(|event| event.message.starts_with("Step started:")));
+        assert!(run
+            .events
+            .iter()
+            .any(|event| event.message.starts_with("Step completed:")));
         assert_eq!(run.run_id, "run-1");
     }
 
@@ -697,17 +766,32 @@ mod tests {
         let join = std::thread::spawn(move || {
             let (bus, receiver) = EventBus::new();
             let planner = LocalPlanner::new();
-            let service = LocalPipelineService::new(&planner, &LocalAgentRuntime, &bus, &DefaultSelfHealService);
-            let result = service.run_with_control(PipelineInput {
-                goal: "build app".into(), emit_events: true, run_id: "paused-run".into(),
-                project_id: None,
-                execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
-            }, &worker);
-            let topics: Vec<_> = receiver.try_iter().map(|event| event.topic().to_string()).collect();
+            let service = LocalPipelineService::new(
+                &planner,
+                &LocalAgentRuntime,
+                &bus,
+                &DefaultSelfHealService,
+            );
+            let result = service.run_with_control(
+                PipelineInput {
+                    goal: "build app".into(),
+                    emit_events: true,
+                    run_id: "paused-run".into(),
+                    project_id: None,
+                    execution_consent: crate::pipeline::supervisor::ExecutionConsent::NotSupplied,
+                },
+                &worker,
+            );
+            let topics: Vec<_> = receiver
+                .try_iter()
+                .map(|event| event.topic().to_string())
+                .collect();
             (result, topics)
         });
         let deadline = Instant::now() + Duration::from_secs(1);
-        while control.state() != "paused" && Instant::now() < deadline { std::thread::yield_now(); }
+        while control.state() != "paused" && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
         assert_eq!(control.state(), "paused");
         assert!(control.abort());
         let (result, topics) = join.join().unwrap();
@@ -737,13 +821,19 @@ mod tests {
         assert_eq!(run.plan.status, PlanStatus::Completed);
         assert_eq!(run.run_id, "run-1");
 
-        assert!(run.outcome.is_some(), "truthful outcome should be populated");
+        assert!(
+            run.outcome.is_some(),
+            "truthful outcome should be populated"
+        );
         let outcome = run.outcome.expect("outcome");
         assert_eq!(
             outcome.generated_file_count + outcome.failed_file_count,
             run.generated_files.len() + run.failed_files.len()
         );
-        assert!(outcome.failed_files.iter().all(|file| !file.path.is_empty()));
+        assert!(outcome
+            .failed_files
+            .iter()
+            .all(|file| !file.path.is_empty()));
     }
 
     #[test]
@@ -759,7 +849,10 @@ mod tests {
         // Cancel is single-shot; repeated cancels and a late pause after
         // cancellation are all rejected.
         assert!(fresh.abort());
-        assert!(!fresh.abort(), "second cancel on a cancelling run is a no-op");
+        assert!(
+            !fresh.abort(),
+            "second cancel on a cancelling run is a no-op"
+        );
         assert!(!fresh.abort(), "even a third cancel is still a no-op");
         assert!(!fresh.pause(), "pause after cancel must not un-cancel");
         assert!(!fresh.resume(), "resume after cancel must not un-cancel");

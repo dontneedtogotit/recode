@@ -78,10 +78,7 @@ pub fn partition_scaffold_paths(paths: &[String]) -> (Vec<String>, Vec<String>) 
 
 /// Dependencies for a Vite + React + TypeScript SPA.
 fn react_spa_dependencies() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("react", "19.2.7"),
-        ("react-dom", "19.2.7"),
-    ]
+    vec![("react", "19.2.7"), ("react-dom", "19.2.7")]
 }
 
 /// Dev dependencies for a Vite + React + TypeScript SPA.
@@ -103,24 +100,83 @@ fn react_spa_dev_dependencies() -> Vec<(&'static str, &'static str)> {
 
 /// Generate a deterministic `package.json` for a Vite + React + TypeScript SPA.
 pub fn generate_package_json(project_name: &str, description: &str) -> String {
-    let mut deps = serde_json::Map::new();
-    for (name, version) in react_spa_dependencies() {
-        deps.insert(name.to_string(), serde_json::Value::String(format!("^{version}")));
-    }
+    generate_package_json_for_stack(
+        project_name,
+        description,
+        &super::stack::ProjectStack::ReactVite,
+    )
+}
 
-    let mut dev_deps = serde_json::Map::new();
-    for (name, version) in react_spa_dev_dependencies() {
-        dev_deps.insert(name.to_string(), serde_json::Value::String(format!("^{version}")));
-    }
+/// Generate a deterministic `package.json` for the project's stack. The
+/// vanilla stack omits React and its types/plugins entirely.
+pub fn generate_package_json_for_stack(
+    project_name: &str,
+    description: &str,
+    stack: &super::stack::ProjectStack,
+) -> String {
+    let (deps, dev_deps): (
+        serde_json::Map<String, serde_json::Value>,
+        serde_json::Map<String, serde_json::Value>,
+    ) = match stack {
+        super::stack::ProjectStack::ReactVite => {
+            let mut deps = serde_json::Map::new();
+            for (name, version) in react_spa_dependencies() {
+                deps.insert(
+                    name.to_string(),
+                    serde_json::Value::String(format!("^{version}")),
+                );
+            }
+            let mut dev_deps = serde_json::Map::new();
+            for (name, version) in react_spa_dev_dependencies() {
+                dev_deps.insert(
+                    name.to_string(),
+                    serde_json::Value::String(format!("^{version}")),
+                );
+            }
+            (deps, dev_deps)
+        }
+        super::stack::ProjectStack::VanillaVite => {
+            let deps = serde_json::Map::new();
+            let mut dev_deps = serde_json::Map::new();
+            for (name, version) in vanilla_dev_dependencies() {
+                dev_deps.insert(
+                    name.to_string(),
+                    serde_json::Value::String(format!("^{version}")),
+                );
+            }
+            (deps, dev_deps)
+        }
+    };
 
     let mut scripts = serde_json::Map::new();
-    scripts.insert("dev".to_string(), serde_json::Value::String("vite".to_string()));
-    scripts.insert("build".to_string(), serde_json::Value::String("tsc -b && vite build".to_string()));
-    scripts.insert("preview".to_string(), serde_json::Value::String("vite preview".to_string()));
-    scripts.insert("test".to_string(), serde_json::Value::String("vitest".to_string()));
-    scripts.insert("test:run".to_string(), serde_json::Value::String("vitest run".to_string()));
-    scripts.insert("lint".to_string(), serde_json::Value::String("eslint src".to_string()));
-    scripts.insert("type-check".to_string(), serde_json::Value::String("tsc --noEmit".to_string()));
+    scripts.insert(
+        "dev".to_string(),
+        serde_json::Value::String("vite".to_string()),
+    );
+    scripts.insert(
+        "build".to_string(),
+        serde_json::Value::String("tsc -b && vite build".to_string()),
+    );
+    scripts.insert(
+        "preview".to_string(),
+        serde_json::Value::String("vite preview".to_string()),
+    );
+    scripts.insert(
+        "test".to_string(),
+        serde_json::Value::String("vitest".to_string()),
+    );
+    scripts.insert(
+        "test:run".to_string(),
+        serde_json::Value::String("vitest run".to_string()),
+    );
+    scripts.insert(
+        "lint".to_string(),
+        serde_json::Value::String("eslint src".to_string()),
+    );
+    scripts.insert(
+        "type-check".to_string(),
+        serde_json::Value::String("tsc --noEmit".to_string()),
+    );
 
     let package_json = serde_json::json!({
         "name": slugify(project_name),
@@ -134,6 +190,18 @@ pub fn generate_package_json(project_name: &str, description: &str) -> String {
         "engines": { "node": ">=20.0.0" }
     });
     serde_json::to_string_pretty(&package_json).unwrap_or_default() + "\n"
+}
+
+/// Dev dependencies for a Vite + vanilla TypeScript static site. No UI
+/// framework, no React types/plugins.
+fn vanilla_dev_dependencies() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("typescript", "5.9.3"),
+        ("vite", "7.3.6"),
+        ("vitest", "3.2.6"),
+        ("eslint", "9.39.4"),
+        ("typescript-eslint", "8.68.0"),
+    ]
 }
 
 /// Generate a deterministic root `tsconfig.json` for a Vite + React project.
@@ -165,6 +233,35 @@ pub fn generate_tsconfig_app() -> String {
             "moduleDetection": "force",
             "noEmit": true,
             "jsx": "react-jsx",
+            "strict": true,
+            "noUnusedLocals": true,
+            "noUnusedParameters": true,
+            "erasableSyntaxOnly": true,
+            "noFallthroughCasesInSwitch": true,
+            "noUncheckedSideEffectImports": true
+        },
+        "include": ["src"]
+    });
+    serde_json::to_string_pretty(&config).unwrap_or_default() + "\n"
+}
+
+/// Generate `tsconfig.app.json` for a vanilla TypeScript project — same
+/// strictness, no JSX compiler option.
+pub fn generate_tsconfig_app_vanilla() -> String {
+    let config = serde_json::json!({
+        "compilerOptions": {
+            "target": "ES2022",
+            "useDefineForClassFields": true,
+            "lib": ["ES2022", "DOM", "DOM.Iterable"],
+            "module": "ESNext",
+            "skipLibCheck": true,
+            "moduleResolution": "bundler",
+            "allowImportingTsExtensions": true,
+            "verbatimModuleSyntax": true,
+            "resolveJsonModule": true,
+            "isolatedModules": true,
+            "moduleDetection": "force",
+            "noEmit": true,
             "strict": true,
             "noUnusedLocals": true,
             "noUnusedParameters": true,
@@ -209,6 +306,34 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: { '@': './src' },
+  },
+  server: {
+    port: 5173,
+    open: true,
+  },
+  build: {
+    outDir: 'dist',
+    sourcemap: true,
+    target: 'es2020',
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+  },
+})
+"#
+    .to_string()
+}
+
+/// Generate a deterministic `vite.config.ts` for a vanilla TypeScript
+/// project — no framework plugin.
+pub fn generate_vite_config_vanilla() -> String {
+    r#"import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
   resolve: {
     alias: { '@': './src' },
   },
@@ -292,14 +417,24 @@ pub fn scaffold_files(
     description: &str,
 ) -> Vec<GeneratedFile> {
     let (scaffold_paths, _source) = partition_scaffold_paths(paths);
+    // The deterministic generators must match the project's stack: a vanilla
+    // goal must not receive React dependencies, the React vite plugin, or a
+    // JSX tsconfig. `description` is the pipeline goal.
+    let stack = super::stack::ProjectStack::detect(description);
     let mut files = Vec::new();
     for path in &scaffold_paths {
         let content = match path.as_str() {
-            "package.json" => generate_package_json(project_name, description),
+            "package.json" => generate_package_json_for_stack(project_name, description, &stack),
             "tsconfig.json" => generate_tsconfig(),
-            "tsconfig.app.json" => generate_tsconfig_app(),
+            "tsconfig.app.json" => match stack {
+                super::stack::ProjectStack::ReactVite => generate_tsconfig_app(),
+                super::stack::ProjectStack::VanillaVite => generate_tsconfig_app_vanilla(),
+            },
             "tsconfig.node.json" => generate_tsconfig_node(),
-            "vite.config.ts" => generate_vite_config(),
+            "vite.config.ts" => match stack {
+                super::stack::ProjectStack::ReactVite => generate_vite_config(),
+                super::stack::ProjectStack::VanillaVite => generate_vite_config_vanilla(),
+            },
             ".gitignore" => generate_gitignore(),
             _ => continue,
         };
@@ -331,7 +466,13 @@ fn slugify(name: &str) -> String {
     let slug: String = name
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = slug.trim_matches('-');
     if trimmed.is_empty() {
@@ -494,6 +635,74 @@ mod tests {
         let paths: Vec<String> = vec!["src/main.tsx".into(), "src/App.tsx".into()];
         let files = scaffold_files(&paths, "test", "");
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn vanilla_package_json_has_no_react_dependencies() {
+        let content = generate_package_json_for_stack(
+            "Vanilla Site",
+            "a vanilla typescript site",
+            &super::super::stack::ProjectStack::VanillaVite,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["name"], "vanilla-site");
+        // No React runtime deps, no React types/plugins in devDependencies.
+        assert!(parsed["dependencies"].as_object().unwrap().is_empty());
+        let dev = parsed["devDependencies"].as_object().unwrap();
+        assert!(!dev.contains_key("react"));
+        assert!(!dev.contains_key("@types/react"));
+        assert!(!dev.contains_key("@vitejs/plugin-react"));
+        // Vite toolchain still present.
+        assert_eq!(dev["vite"], "^7.3.6");
+        assert_eq!(dev["typescript"], "^5.9.3");
+    }
+
+    #[test]
+    fn vanilla_vite_config_has_no_react_plugin() {
+        let content = generate_vite_config_vanilla();
+        assert!(!content.contains("@vitejs/plugin-react"));
+        assert!(!content.contains("react()"));
+        assert!(content.contains("defineConfig"));
+    }
+
+    #[test]
+    fn vanilla_tsconfig_app_has_no_jsx_option() {
+        let content = generate_tsconfig_app_vanilla();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed["compilerOptions"].get("jsx").is_none());
+        assert_eq!(parsed["compilerOptions"]["strict"], true);
+    }
+
+    #[test]
+    fn scaffold_files_matches_vanilla_stack_from_goal() {
+        let paths: Vec<String> = vec![
+            "package.json".into(),
+            "tsconfig.app.json".into(),
+            "vite.config.ts".into(),
+        ];
+        let files = scaffold_files(&paths, "vanilla-app", "build a vanilla typescript site");
+        let by_path = |path: &str| {
+            files
+                .iter()
+                .find(|f| f.path == path)
+                .unwrap_or_else(|| panic!("{path} missing"))
+                .content
+                .clone()
+        };
+        let pkg: serde_json::Value = serde_json::from_str(&by_path("package.json")).unwrap();
+        assert!(pkg["dependencies"].as_object().unwrap().is_empty());
+        let tsconfig: serde_json::Value =
+            serde_json::from_str(&by_path("tsconfig.app.json")).unwrap();
+        assert!(tsconfig["compilerOptions"].get("jsx").is_none());
+        assert!(!by_path("vite.config.ts").contains("@vitejs/plugin-react"));
+    }
+
+    #[test]
+    fn scaffold_files_keeps_react_defaults_for_ordinary_goals() {
+        let paths: Vec<String> = vec!["package.json".into()];
+        let files = scaffold_files(&paths, "react-app", "build a landing page");
+        let pkg: serde_json::Value = serde_json::from_str(&files[0].content).unwrap();
+        assert_eq!(pkg["dependencies"]["react"], "^19.2.7");
     }
 
     #[test]
