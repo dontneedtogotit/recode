@@ -5,31 +5,35 @@
 //! missing-import compile failures before the project ships to preview.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const DATA_FILE_EXTENSIONS: &[&str] = &[
     ".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml",
     ".lock", ".md", ".txt", ".xml", ".csv",
 ];
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const ASSET_EXTENSIONS: &[&str] = &[
     ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".woff", ".woff2", ".ttf", ".eot",
 ];
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const STYLE_EXTENSIONS: &[&str] = &[
     ".css", ".scss", ".less", ".sass", ".styl",
 ];
 
 /// True when the path is a data/manifest file rather than a code module.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn is_data_file_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     DATA_FILE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 /// Normalize a path string: resolve `..` and `.` segments.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn normalize_path(path: &str) -> String {
     let parts: Vec<&str> = path.split('/').collect();
     let mut normalized: Vec<&str> = Vec::new();
@@ -50,6 +54,7 @@ pub fn normalize_path(path: &str) -> String {
 
 /// Resolve a relative import source to a concrete target file path.
 /// Mirrors the extension-probing logic in devcode's SymbolRegistry.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn resolve_target_path(import_source: &str, from_dir: &str) -> String {
     let normalized = if import_source.starts_with("@/") {
         normalize_path(&format!("src/{}", &import_source[2..]))
@@ -88,6 +93,7 @@ pub fn resolve_target_path(import_source: &str, from_dir: &str) -> String {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn strip_code_extension(path: &str) -> String {
     for ext in &[".ts", ".tsx", ".js", ".jsx"] {
         if path.ends_with(ext) {
@@ -100,6 +106,7 @@ fn strip_code_extension(path: &str) -> String {
 /// Extract a display name from a file path for component stubs.
 /// e.g. "src/components/Header.tsx" → "Header"
 ///      "src/stores/index.ts" → "Stores"
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn extract_component_name(file_path: &str) -> String {
     let stripped = strip_code_extension(file_path);
     let segments: Vec<&str> = stripped.split('/').collect();
@@ -126,6 +133,7 @@ pub fn extract_component_name(file_path: &str) -> String {
 }
 
 /// Generate a minimal, runtime-safe placeholder export for a missing symbol.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn generate_placeholder_export(symbol: &str) -> String {
     if symbol.ends_with("Error") {
         return format!(
@@ -148,12 +156,14 @@ pub fn generate_placeholder_export(symbol: &str) -> String {
     format!("export const {}: unknown = undefined;", symbol)
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StubSymbol {
     pub name: String,
     pub is_default: bool,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratedStub {
     pub path: String,
@@ -162,6 +172,7 @@ pub struct GeneratedStub {
 }
 
 /// Build a minimal stub file for a missing import target.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn build_stub(target_path: &str, symbols: &[StubSymbol]) -> GeneratedStub {
     let lower = target_path.to_ascii_lowercase();
     if STYLE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {

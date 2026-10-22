@@ -3,18 +3,22 @@
 //! TTL-aware prompt template cache and content-hash based generation result cache.
 //! Prevents redundant LLM calls across rebuilds. Pure module — no I/O, no DI.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const PROMPT_CACHE_TTL_MS: u128 = 15 * 60 * 1000;
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const PROMPT_CACHE_MAX_ENTRIES: usize = 50;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const RESULT_CACHE_TTL_MS: u128 = 30 * 60 * 1000;
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const RESULT_CACHE_MAX_ENTRIES: usize = 50;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn to_radix_36(mut value: u64) -> String {
     const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     if value == 0 {
@@ -29,6 +33,7 @@ fn to_radix_36(mut value: u64) -> String {
     result.into_iter().collect()
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSpecification {
     pub title: Option<String>,
@@ -37,6 +42,7 @@ pub struct ProjectSpecification {
     pub features: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlanningContext {
     pub architecture_summary: Option<String>,
@@ -44,11 +50,13 @@ pub struct PlanningContext {
     pub plan_review_findings: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default)]
 pub struct PromptTemplateCache {
     entries: BTreeMap<String, CachedPromptEntry>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedPromptEntry {
     content: String,
@@ -56,8 +64,10 @@ struct CachedPromptEntry {
 }
 
 impl PromptTemplateCache {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self { Self::default() }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn now_ms() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -65,6 +75,7 @@ impl PromptTemplateCache {
             .unwrap_or(0)
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn evict_expired(&mut self) {
         let now = Self::now_ms();
         let expired: Vec<String> = self.entries.iter()
@@ -74,6 +85,7 @@ impl PromptTemplateCache {
         for key in expired { self.entries.remove(&key); }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn build_static_prompt_sections(
         &mut self,
         spec: &ProjectSpecification,
@@ -151,6 +163,7 @@ impl PromptTemplateCache {
         result
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn cache_key(spec: &ProjectSpecification, planning_context: Option<&PlanningContext>, mode: Option<&str>) -> String {
         let parts = [
             spec.title.clone().unwrap_or_default(),
@@ -165,11 +178,13 @@ impl PromptTemplateCache {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default)]
 pub struct GenerationResultCache {
     entries: BTreeMap<String, CachedResultEntry>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedResultEntry {
     content: String,
@@ -177,8 +192,10 @@ struct CachedResultEntry {
 }
 
 impl GenerationResultCache {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self { Self::default() }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn now_ms() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -187,6 +204,7 @@ impl GenerationResultCache {
     }
 
     /// Fast 32-bit djb2-style hash for cache keys.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn hash_content(content: &str) -> String {
         let mut hash: u64 = 5381;
         for ch in content.chars() {
@@ -195,6 +213,7 @@ impl GenerationResultCache {
         to_radix_36(hash)
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn cache_key(file_path: &str, language: &str, specification: &str, symbol_contract_hash: Option<&str>) -> String {
         [
             file_path,
@@ -204,6 +223,7 @@ impl GenerationResultCache {
         ].join(":")
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get(&mut self, key: &str) -> Option<String> {
         let entry = self.entries.get(key)?;
         if Self::now_ms().saturating_sub(entry.created_at_ms) > RESULT_CACHE_TTL_MS {
@@ -213,6 +233,7 @@ impl GenerationResultCache {
         Some(entry.content.clone())
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn set(&mut self, key: &str, content: &str) {
         if self.entries.len() > 0 && self.entries.len() % 10 == 0 {
             let now = Self::now_ms();

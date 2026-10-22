@@ -5,11 +5,11 @@
 //! corresponding implementation and test coverage.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Requirement {
     pub id: String,
@@ -23,6 +23,7 @@ pub struct Requirement {
     pub verification_result: Option<String>, // 'passed' | 'failed' | 'skipped'
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceabilityInput {
     pub requirements: Vec<TraceabilityRequirement>,
@@ -32,6 +33,7 @@ pub struct TraceabilityInput {
     pub verification_results: BTreeMap<String, TraceabilityVerification>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceabilityRequirement {
     pub id: String,
@@ -40,16 +42,19 @@ pub struct TraceabilityRequirement {
     pub acceptance_criteria: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceabilityFile {
     pub path: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceabilityVerification {
     pub status: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TraceabilityReport {
     pub total_requirements: usize,
@@ -62,15 +67,18 @@ pub struct TraceabilityReport {
     pub gaps: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct RequirementsTraceabilityService {
     requirements: BTreeMap<String, Requirement>,
 }
 
 impl RequirementsTraceabilityService {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self {
         Self { requirements: BTreeMap::new() }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn track(&mut self, input: &TraceabilityInput) -> TraceabilityReport {
         let mut requirements = Vec::new();
         let mut gaps = Vec::new();
@@ -156,20 +164,24 @@ impl RequirementsTraceabilityService {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_requirement(&self, id: &str) -> Option<&Requirement> {
         self.requirements.get(id)
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_all_requirements(&self) -> Vec<Requirement> {
         self.requirements.values().cloned().collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn clear(&mut self) {
         self.requirements.clear();
     }
 }
 
 /// Check if a file path matches a requirement by keyword overlap.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn matches_requirement(file_path: &str, requirement_description: &str) -> bool {
     let desc_lower = requirement_description.to_lowercase();
     let keywords: Vec<&str> = desc_lower

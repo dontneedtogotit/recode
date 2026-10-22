@@ -13,7 +13,6 @@
 //! matching), not a parser — it's a fast check that expected names appear in
 //! the expected files, not a type checker.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use super::types::GeneratedFile;
 use std::collections::HashMap;
@@ -21,6 +20,7 @@ use std::collections::HashMap;
 // ─── Contract Types ─────────────────────────────────────────────────────────
 
 /// A function/method signature contract.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SignatureContract {
     /// Fully qualified name: `module.function` or `ClassName.method`
@@ -35,6 +35,7 @@ pub struct SignatureContract {
     pub line: u32,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SignatureParameter {
     pub name: String,
@@ -43,6 +44,7 @@ pub struct SignatureParameter {
 }
 
 /// A schema field contract (Zod, TypeScript interface, etc.).
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchemaFieldContract {
     pub schema_name: String,
@@ -56,6 +58,7 @@ pub struct SchemaFieldContract {
 }
 
 /// A route contract.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RouteContract {
     pub method: String,
@@ -69,6 +72,7 @@ pub struct RouteContract {
 }
 
 /// An error format contract.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ErrorFormatContract {
     pub code: String,
@@ -79,6 +83,7 @@ pub struct ErrorFormatContract {
 }
 
 /// An authorization rule contract.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorizationContract {
     pub resource: String,
@@ -89,6 +94,7 @@ pub struct AuthorizationContract {
 }
 
 /// Complete contract lock for a project.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContractLock {
     pub id: String,
@@ -101,6 +107,7 @@ pub struct ContractLock {
 }
 
 /// A contract violation found during validation.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContractViolation {
     pub violation_type: String,
@@ -112,6 +119,7 @@ pub struct ContractViolation {
 }
 
 /// Validation result for a single generated file against the contract lock.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContractValidationResult {
     pub file: String,
@@ -120,6 +128,7 @@ pub struct ContractValidationResult {
 }
 
 /// Inputs for creating a contract lock.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct ContractLockInput {
     pub signatures: Vec<SignatureContract>,
     pub schema_fields: Vec<SchemaFieldContract>,
@@ -137,6 +146,7 @@ pub struct ContractLockInput {
 /// files. The checks are heuristic (substring matching), not parser-based:
 /// they catch the common failure where a file is generated without the
 /// expected export/field/route, not subtle type mismatches.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct ContractLockService {
     locks: HashMap<String, ContractLock>,
 }
@@ -148,11 +158,13 @@ impl Default for ContractLockService {
 }
 
 impl ContractLockService {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a new contract lock from extracted contracts.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn create_lock(&mut self, input: ContractLockInput) -> ContractLock {
         let id = format!(
             "lock-{}",
@@ -179,6 +191,7 @@ impl ContractLockService {
 
     /// Validate generated files against a contract lock.
     /// Returns a list of validation results, one per file.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn validate_against_lock(
         &self,
         files: &[GeneratedFile],
@@ -197,6 +210,7 @@ impl ContractLockService {
             .collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn validate_file(
         &self,
         file: &GeneratedFile,
@@ -301,16 +315,19 @@ impl ContractLockService {
     }
 
     /// Get a lock by ID.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_lock(&self, id: &str) -> Option<&ContractLock> {
         self.locks.get(id)
     }
 
     /// Remove a lock by ID.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn remove_lock(&mut self, id: &str) -> bool {
         self.locks.remove(id).is_some()
     }
 
     /// Clear all locks.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn clear(&mut self) {
         self.locks.clear();
     }

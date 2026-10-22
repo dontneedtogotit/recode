@@ -4,13 +4,14 @@
 //! success/failure counts, file generation counts, and overall pipeline
 //! health. Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const MAX_HISTORY: usize = 1000;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StageMetrics {
     pub name: String,
@@ -21,6 +22,7 @@ pub struct StageMetrics {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PipelineMetrics {
     pub pipeline_id: String,
@@ -35,6 +37,7 @@ pub struct PipelineMetrics {
     pub retry_count: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AggregatedPipelineMetrics {
     pub total_pipelines: usize,
@@ -46,15 +49,18 @@ pub struct AggregatedPipelineMetrics {
     pub stage_success_rate: BTreeMap<String, f32>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct PipelineMetricsCollector {
     history: Vec<PipelineMetrics>,
 }
 
 impl PipelineMetricsCollector {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self {
         Self { history: Vec::new() }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn record_pipeline(&mut self, metrics: PipelineMetrics) {
         self.history.push(metrics);
         if self.history.len() > MAX_HISTORY {
@@ -62,15 +68,18 @@ impl PipelineMetricsCollector {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_history(&self, limit: usize) -> &[PipelineMetrics] {
         let start = self.history.len().saturating_sub(limit);
         &self.history[start..]
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_latest(&self) -> Option<&PipelineMetrics> {
         self.history.last()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_aggregated(&self) -> AggregatedPipelineMetrics {
         let total = self.history.len();
         let successful = self.history.iter().filter(|p| p.success).count();
@@ -108,6 +117,7 @@ impl PipelineMetricsCollector {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn clear(&mut self) {
         self.history.clear();
     }

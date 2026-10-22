@@ -5,11 +5,11 @@
 //! pipeline can adapt over time.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BuildPattern {
     pub id: String,
@@ -22,6 +22,7 @@ pub struct BuildPattern {
     pub examples: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepairActionRecord {
     pub id: String,
@@ -33,6 +34,7 @@ pub struct RepairActionRecord {
     pub last_applied_at: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternLearningInput {
     pub outcome: PatternLearningOutcome,
@@ -41,6 +43,7 @@ pub struct PatternLearningInput {
     pub verification_results: Option<PatternLearningGates>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternLearningOutcome {
     pub success: bool,
@@ -51,12 +54,14 @@ pub struct PatternLearningOutcome {
     pub stage: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternLearningFile {
     pub path: String,
     pub content: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PatternLearningGates {
     pub compile_status: Option<String>,
@@ -72,6 +77,7 @@ pub struct PatternLearningGates {
     pub persistence_persisted_count: Option<usize>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PatternLearningResult {
     pub patterns: Vec<BuildPattern>,
@@ -79,12 +85,14 @@ pub struct PatternLearningResult {
     pub insights: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct PatternLearningService {
     patterns: BTreeMap<String, BuildPattern>,
     repair_actions: BTreeMap<String, RepairActionRecord>,
 }
 
 impl PatternLearningService {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self {
         Self {
             patterns: BTreeMap::new(),
@@ -92,6 +100,7 @@ impl PatternLearningService {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn learn(&mut self, input: &PatternLearningInput) -> PatternLearningResult {
         let mut patterns = Vec::new();
         let mut insights = Vec::new();
@@ -139,14 +148,17 @@ impl PatternLearningService {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_patterns(&self) -> Vec<BuildPattern> {
         self.patterns.values().cloned().collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_repair_actions(&self) -> Vec<RepairActionRecord> {
         self.repair_actions.values().cloned().collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn clear(&mut self) {
         self.patterns.clear();
         self.repair_actions.clear();
@@ -178,6 +190,7 @@ impl PatternLearningService {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn categorize_check(check_id: &str) -> &'static str {
     match check_id {
         "compile" => "compile",
@@ -191,6 +204,7 @@ fn categorize_check(check_id: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn extract_pattern(input: &PatternLearningInput, check_id: &str) -> String {
     if let Some(gates) = &input.verification_results {
         match check_id {
@@ -215,6 +229,7 @@ fn extract_pattern(input: &PatternLearningInput, check_id: &str) -> String {
     format!("{check_id}:failed")
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

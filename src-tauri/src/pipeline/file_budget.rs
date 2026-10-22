@@ -4,19 +4,21 @@
 //! Planned files and deterministic scaffold/manifest files are never dropped.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use std::collections::HashSet;
 
 /// Minimum auxiliary files allowed even if the plan is small.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const MIN_AUXILIARY_FILES: usize = 3;
 /// Ratio of auxiliary files to planned files.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 const AUXILIARY_FILE_RATIO: f64 = 0.25;
 
 /// Pattern matching required manifest/scaffold files that must never be dropped.
 /// Matches: package.json, tsconfig*.json, vite.config.*, vitest.config.*,
 /// eslint*.json, .eslintrc*, postcss.config.*, tailwind.config.*,
 /// prettier.config.*, index.html, .gitignore, README.md, public/
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn is_required_manifest(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let filename = lower.rsplit('/').next().unwrap_or(&lower);
@@ -37,6 +39,7 @@ fn is_required_manifest(path: &str) -> bool {
 
 /// Enforce the auxiliary file budget: drop non-planned, non-manifest files
 /// that exceed the slack. Returns the filtered file list and the number dropped.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn enforce_auxiliary_file_budget(
     generated_paths: Vec<String>,
     planned_paths: &HashSet<String>,

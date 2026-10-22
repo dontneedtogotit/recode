@@ -5,12 +5,12 @@
 //!
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EdgeCaseType {
     #[serde(rename = "empty_data")] EmptyData,
@@ -21,6 +21,7 @@ pub enum EdgeCaseType {
     #[serde(rename = "expired_session")] ExpiredSession,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeCaseScenario {
     pub id: String,
@@ -32,6 +33,7 @@ pub struct EdgeCaseScenario {
     pub is_critical: bool,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeCaseResult {
     pub scenario_id: String,
@@ -41,12 +43,14 @@ pub struct EdgeCaseResult {
     pub evidence: Option<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeCaseStats {
     pub passed: usize,
     pub failed: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeCaseSummary {
     pub total_scenarios: usize,
@@ -57,6 +61,7 @@ pub struct EdgeCaseSummary {
     pub results_by_type: std::collections::HashMap<String, EdgeCaseStats>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 struct ScenarioResult {
     passed: bool,
     error: Option<String>,
@@ -65,9 +70,11 @@ struct ScenarioResult {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct EdgeCaseExerciseService;
 
 impl EdgeCaseExerciseService {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn exercise_scenarios(&self, scenarios: &[EdgeCaseScenario]) -> EdgeCaseSummary {
         let start_time = std::time::Instant::now();
         let mut results = Vec::new();

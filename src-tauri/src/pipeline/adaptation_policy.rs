@@ -4,11 +4,11 @@
 //! with hard limits so that adaptive behavior is bounded and auditable.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AdaptiveActionType {
     InsertSecurityAudit,
@@ -28,6 +28,7 @@ pub enum AdaptiveActionType {
 }
 
 impl AdaptiveActionType {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn priority(&self) -> u8 {
         match self {
             Self::InsertRuntimeRemediation | Self::RestartBoot
@@ -44,6 +45,7 @@ impl AdaptiveActionType {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn is_non_essential(&self) -> bool {
         matches!(self,
             Self::InsertAgenticReview | Self::InsertQualityTelemetry
@@ -53,6 +55,7 @@ impl AdaptiveActionType {
         )
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     fn is_insert(&self) -> bool {
         matches!(self,
             Self::InsertSecurityAudit | Self::InsertTypeSafety
@@ -64,6 +67,7 @@ impl AdaptiveActionType {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDecision {
     pub allowed: bool,
@@ -72,6 +76,7 @@ pub struct PolicyDecision {
     pub suggestion: Option<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyBudget {
     pub max_inserted_stages: usize,
@@ -95,6 +100,7 @@ impl Default for PolicyBudget {
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageOutcome {
     pub stage_name: String,
@@ -105,12 +111,14 @@ pub struct StageOutcome {
     pub retry_count: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpeculativeStats {
     pub started: usize,
     pub promoted: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Default)]
 pub struct PolicyRunState {
     pub total_inserted: usize,
@@ -123,12 +131,14 @@ pub struct PolicyRunState {
     pub started_at: u64,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct PipelineAdaptationPolicy {
     state: PolicyRunState,
     budget: PolicyBudget,
 }
 
 impl PipelineAdaptationPolicy {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new(budget: PolicyBudget) -> Self {
         Self {
             state: PolicyRunState::default(),
@@ -136,6 +146,7 @@ impl PipelineAdaptationPolicy {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn record_stage_outcome(&mut self, outcome: StageOutcome) {
         self.state.stage_outcomes.push(outcome.clone());
         let prev = self.state.stage_retries.get(&outcome.stage_name).copied().unwrap_or(0);
@@ -162,18 +173,22 @@ impl PipelineAdaptationPolicy {
         }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn update_speculative_stats(&mut self, stats: SpeculativeStats) {
         self.state.speculative_stats = Some(stats);
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn record_inserted(&mut self, count: usize) {
         self.state.total_inserted += count;
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn record_remediation_inserted(&mut self) {
         self.state.remediation_insertions += 1;
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn evaluate(&self, action: &AdaptiveActionType) -> PolicyDecision {
         if self.state.vetoed_actions.contains(action) {
             return PolicyDecision {
@@ -222,6 +237,7 @@ impl PipelineAdaptationPolicy {
         PolicyDecision { allowed: true, reason: "Within policy budget".into(), suggestion: None }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn filter_actions(&self, candidates: &[AdaptiveActionType]) -> Vec<AdaptiveActionType> {
         let budget_remaining = self.budget.max_inserted_stages.saturating_sub(self.state.total_inserted);
         let allowed: Vec<AdaptiveActionType> = candidates
@@ -245,11 +261,13 @@ impl PipelineAdaptationPolicy {
         remediation.into_iter().chain(analysis).collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn should_pause_for_review(&self, stage_name: &str) -> bool {
         if !self.budget.allow_pause_for_review { return false; }
         self.state.stage_retries.get(stage_name).copied().unwrap_or(0) >= self.budget.max_stage_retries
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn adaptive_inserted_stages_budget(&self) -> usize {
         let base = self.budget.max_inserted_stages;
         let fault_rate = if !self.state.stage_outcomes.is_empty() {

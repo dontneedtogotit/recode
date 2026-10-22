@@ -3,10 +3,10 @@
 //! Classifies failure error messages and detects common failure patterns across generated files.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FailedFileSummary {
     pub path: String,
@@ -14,6 +14,7 @@ pub struct FailedFileSummary {
     pub failure_reason: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FailurePattern {
     pub pattern_type: String,
@@ -22,6 +23,7 @@ pub struct FailurePattern {
 }
 
 /// Classify a failure error message into a structured failure reason.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn classify_failure_reason(error: &str) -> String {
     let lower = error.to_lowercase();
     if lower.contains("truncat")
@@ -47,6 +49,7 @@ pub fn classify_failure_reason(error: &str) -> String {
 }
 
 /// Detect repeating failure patterns across multiple files.
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn detect_failure_pattern(failures: &[FailedFileSummary]) -> Option<FailurePattern> {
     if failures.len() < 2 {
         return None;

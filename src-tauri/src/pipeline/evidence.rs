@@ -5,11 +5,11 @@
 //! verification results, logs, and build artifacts.
 //! Pure module — no stores, no DI, no I/O.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidenceItem {
     pub id: String,
@@ -21,6 +21,7 @@ pub struct EvidenceItem {
     pub tags: Vec<String>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidenceCollectionSummary {
     pub total_items: usize,
@@ -31,6 +32,7 @@ pub struct EvidenceCollectionSummary {
     pub metric_count: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidenceCollection {
     pub id: String,
@@ -40,6 +42,7 @@ pub struct EvidenceCollection {
     pub collected_at: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceCollectionInput {
     pub generated_files: Vec<EvidenceFile>,
@@ -53,12 +56,14 @@ pub struct EvidenceCollectionInput {
     pub metrics: BTreeMap<String, serde_json::Value>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceFile {
     pub path: String,
     pub content: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceLog {
     pub level: String,
@@ -66,6 +71,7 @@ pub struct EvidenceLog {
     pub timestamp: String,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceArtifact {
     pub name: String,
@@ -73,15 +79,18 @@ pub struct EvidenceArtifact {
     pub size: usize,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct EvidenceCollector {
     collections: BTreeMap<String, EvidenceCollection>,
 }
 
 impl EvidenceCollector {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new() -> Self {
         Self { collections: BTreeMap::new() }
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn collect(&mut self, input: &EvidenceCollectionInput) -> EvidenceCollection {
         let mut items = Vec::new();
         let build_id = uuid_v4();
@@ -173,23 +182,28 @@ impl EvidenceCollector {
         collection
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_collection(&self, id: &str) -> Option<&EvidenceCollection> {
         self.collections.get(id)
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn get_all_collections(&self) -> Vec<EvidenceCollection> {
         self.collections.values().cloned().collect()
     }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn clear(&mut self) {
         self.collections.clear();
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn uuid_v4() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

@@ -3,8 +3,8 @@
 //! Maps a build verification policy to the set of required gates and their
 //! enforcement rules. Single source of truth for what "verified" means at each policy level.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BuildVerificationPolicy {
@@ -13,6 +13,7 @@ pub enum BuildVerificationPolicy {
     Strict,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VerificationPolicyRule {
     pub policy: BuildVerificationPolicy,
@@ -23,6 +24,7 @@ pub struct VerificationPolicyRule {
     pub preview_available: bool,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn get_verification_policy_rule(policy: BuildVerificationPolicy) -> VerificationPolicyRule {
     match policy {
         BuildVerificationPolicy::PreviewOnly => VerificationPolicyRule {
@@ -52,18 +54,22 @@ pub fn get_verification_policy_rule(policy: BuildVerificationPolicy) -> Verifica
     }
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn is_gate_required(policy: BuildVerificationPolicy, gate_id: &str) -> bool {
     get_verification_policy_rule(policy).required_gates.iter().any(|g| g == gate_id)
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn does_skip_degrade(policy: BuildVerificationPolicy) -> bool {
     get_verification_policy_rule(policy).skip_degrades
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn is_preview_available(policy: BuildVerificationPolicy) -> bool {
     get_verification_policy_rule(policy).preview_available
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectRiskLevel {
@@ -73,6 +79,7 @@ pub enum ProjectRiskLevel {
     Critical,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VerificationPolicyInput {
     pub risk_level: Option<ProjectRiskLevel>,
@@ -81,6 +88,7 @@ pub struct VerificationPolicyInput {
     pub is_preview: Option<bool>,
 }
 
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub fn determine_verification_policy(input: &VerificationPolicyInput) -> BuildVerificationPolicy {
     let risk_level = input.risk_level.unwrap_or(ProjectRiskLevel::Medium);
     let has_tests = input.has_tests.unwrap_or(true);

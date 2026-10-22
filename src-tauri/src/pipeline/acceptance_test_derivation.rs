@@ -3,11 +3,11 @@
 //! Generates acceptance tests from acceptance criteria independently of
 //! implementation.
 
-#![allow(dead_code)]  // ROADMAP parity port: kept for planned wiring; prune when the Q-item closes.
 
 use serde::{Deserialize, Serialize};
 
 // Types omitted for brevity for testing compilation
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcceptanceCriterion {
     pub id: String,
@@ -15,21 +15,25 @@ pub struct AcceptanceCriterion {
     pub requirement_id: String,
     pub is_passed: bool,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureRequirement {
     pub id: String,
     pub title: String,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanningRequirements {
     pub acceptance_criteria: Vec<AcceptanceCriterion>,
     pub must_have_features: Vec<FeatureRequirement>,
     pub optional_features: Vec<FeatureRequirement>,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesignPlan {
     pub requirements: PlanningRequirements,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DerivedAcceptanceTest {
     pub id: String,
@@ -41,12 +45,14 @@ pub struct DerivedAcceptanceTest {
     pub framework: String,
     pub is_independent: bool,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptanceTestDerivationInput {
     pub plan: DesignPlan,
     pub framework: Option<String>,
     pub output_dir: Option<String>,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptanceTestDerivationResult {
     pub tests: Vec<DerivedAcceptanceTest>,
@@ -55,11 +61,13 @@ pub struct AcceptanceTestDerivationResult {
     pub total_criteria: usize,
     pub coverage_ratio: f64,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TestFile {
     pub path: String,
     pub content: String,
 }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
 pub struct AcceptanceTestDerivationService {
     pub framework: String,
 }
@@ -69,9 +77,11 @@ impl Default for AcceptanceTestDerivationService {
     }
 }
 impl AcceptanceTestDerivationService {
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn new(framework: Option<String>) -> Self {
         Self { framework: framework.unwrap_or_else(|| "vitest".to_string()) }
     }
+#[allow(dead_code)]  // ROADMAP parity port, wiring pending
     pub fn derive_tests(&self, input: AcceptanceTestDerivationInput) -> AcceptanceTestDerivationResult {
         let plan = input.plan;
         let framework = input.framework.unwrap_or_else(|| self.framework.clone());
